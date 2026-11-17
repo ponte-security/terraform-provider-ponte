@@ -28,7 +28,7 @@ func providerBlock(endpoint string) string {
   endpoint = %q
   token    = %q
 }
-`, endpoint, testToken)
+`, endpoint+"/api/control", testToken)
 }
 
 func policyYAML(name, description, tool string) string {
@@ -223,3 +223,69 @@ resource "ponte_agent_group_member" "m%d" {
 
 // terraformState is the plugin-testing state type, aliased so checks read plainly.
 type terraformState = terraform.State
+
+func TestAccWebhookAndBudget(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC not set")
+	}
+	f, ts := startFake(testToken)
+	defer ts.Close()
+	cfg := func(name string, usd float64, enabled bool) string {
+		return providerBlock(ts.URL) + fmt.Sprintf(`
+resource "ponte_webhook" "siem" {
+  name        = %q
+  url         = "https://siem.example.com/hooks/ponte"
+  event_types = ["authz.decision", "receipt.issued"]
+  headers     = { Authorization = "Bearer siem-token" }
+  enabled     = %t
+}
+
+resource "ponte_spend_budget" "team" {
+  scope       = "team"
+  ref         = "claims"
+  monthly_usd = %v
+}
+
+resource "ponte_spend_budget" "org" {
+  scope          = "org"
+  monthly_tokens = 5000000
+}
+`, name, enabled, usd)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("SIEM", 100, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestMatchResourceAttr("ponte_webhook.siem", "id", regexp.MustCompile(`^wh_`)),
+					resource.TestMatchResourceAttr("ponte_webhook.siem", "signing_secret", regexp.MustCompile(`^whsec_`)),
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "event_types.#", "2"),
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "format", "ponte"),
+					resource.TestCheckResourceAttr("ponte_spend_budget.team", "id", "team:claims"),
+					resource.TestCheckResourceAttr("ponte_spend_budget.org", "ref", "*"),
+					resource.TestCheckResourceAttr("ponte_spend_budget.org", "monthly_tokens", "5000000"),
+				),
+			},
+			{
+				// Rename and pause the webhook (the secret is kept), raise the budget.
+				Config: cfg("SIEM (paused)", 250, false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "name", "SIEM (paused)"),
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "enabled", "false"),
+					resource.TestMatchResourceAttr("ponte_webhook.siem", "signing_secret", regexp.MustCompile(`^whsec_`)),
+					resource.TestCheckResourceAttr("ponte_spend_budget.team", "monthly_usd", "250"),
+				),
+			},
+			{
+				ResourceName:      "ponte_spend_budget.team",
+				ImportState:       true,
+				ImportStateId:     "team:claims",
+				ImportStateVerify: true,
+			},
+		},
+	})
+	if len(f.webhooks) != 0 || len(f.budgets) != 0 {
+		t.Fatalf("destroy cleans up: webhooks %d budgets %d", len(f.webhooks), len(f.budgets))
+	}
+}

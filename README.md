@@ -46,6 +46,10 @@ resource "ponte_policy_binding" "claims_bot_budget" {
 | `ponte_agent_group` | `grp_…` | name, description, trust_level, owner, tags, max_concurrent_agents. Import by id. |
 | `ponte_agent_group_member` | `group_id/agent_id` | one agent in one group. |
 | `ponte_policy_binding` | `agent_id/policy_id` | binds a policy to one agent directly. Takes `ponte_policy.x.policy_id`; when the policy gets a new version the binding is replaced, and both halves are idempotent because the server moves bindings with the name. |
+| `ponte_webhook` | `wh_…` | an outbound subscription: name, url, event_types (`["*"]` for all), headers (sensitive, not read back), enabled, format `ponte` or `udm`, format_config. `signing_secret` is computed on create and kept in state (sensitive). |
+| `ponte_spend_budget` | `scope:ref` | a monthly model-spend budget on `org` (ref omitted), `team`, `owner` (`user:…` / `group:…`), `agent`, or `model`; `monthly_usd` and/or `monthly_tokens`. Destroy clears it. |
+
+Webhooks and budgets live on the api (`…/api`) rather than the control plane (`…/api/control`); the provider derives the api base from `endpoint`, or takes `api_endpoint` / `PONTE_API_BASE_URL`. The same operator token authorizes both.
 
 ## Authentication
 
@@ -71,4 +75,4 @@ Publishing to the Terraform Registry needs a release workflow (goreleaser, GPG-s
 
 ## Not yet covered
 
-Registry resources (MCP servers) and tool approvals, webhooks, spend budgets, SCIM targets, recert policies, data sources for agents. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.
+Registry resources (MCP servers) and tool approvals, SCIM targets, recert policies, data sources for agents. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.

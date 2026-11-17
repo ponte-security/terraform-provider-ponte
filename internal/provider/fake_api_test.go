@@ -36,8 +36,27 @@ type fakeGroup struct {
 	MaxConcurrentAgents *int     `json:"max_concurrent_agents,omitempty"`
 }
 
+type fakeWebhook struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	URL         string   `json:"url"`
+	EventTypes  []string `json:"event_types"`
+	Description string   `json:"description"`
+	Enabled     *bool    `json:"enabled"`
+	Format      string   `json:"format"`
+}
+
+type fakeBudget struct {
+	Scope         string   `json:"scope"`
+	Ref           string   `json:"ref"`
+	MonthlyUSD    *float64 `json:"monthly_usd"`
+	MonthlyTokens *int64   `json:"monthly_tokens"`
+}
+
 type fakeAPI struct {
 	mu       sync.Mutex
+	webhooks map[string]*fakeWebhook
+	budgets  map[string]*fakeBudget
 	token    string
 	n        int
 	policies map[string]*fakePolicy // by policy id
@@ -48,7 +67,8 @@ type fakeAPI struct {
 }
 
 func newFakeAPI(token string) *fakeAPI {
-	return &fakeAPI{token: token, policies: map[string]*fakePolicy{}, groups: map[string]*fakeGroup{}, members: map[string]map[string]bool{}, bindings: map[string]map[string]bool{}}
+	return &fakeAPI{token: token, policies: map[string]*fakePolicy{}, groups: map[string]*fakeGroup{}, members: map[string]map[string]bool{}, bindings: map[string]map[string]bool{},
+		webhooks: map[string]*fakeWebhook{}, budgets: map[string]*fakeBudget{}}
 }
 
 func (f *fakeAPI) id(prefix string) string {
@@ -79,9 +99,89 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-	p := strings.TrimPrefix(r.URL.Path, "/v1")
+	p := r.URL.Path
+	p = strings.TrimPrefix(p, "/api/control")
+	p = strings.TrimPrefix(p, "/api")
+	p = strings.TrimPrefix(p, "/v1")
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	switch {
+	case p == "/webhooks" && r.Method == http.MethodPost:
+		var in fakeWebhook
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Name == "" || !strings.HasPrefix(in.URL, "https://") || len(in.EventTypes) == 0 {
+			jsonOut(w, 400, map[string]any{"error": "name, https url and event_types are required"})
+			return
+		}
+		in.ID = f.id("wh")
+		if in.Format == "" {
+			in.Format = "ponte"
+		}
+		if in.Enabled == nil {
+			t := true
+			in.Enabled = &t
+		}
+		f.webhooks[in.ID] = &in
+		jsonOut(w, 201, map[string]any{"id": in.ID, "signing_secret": "whsec_" + in.ID})
+	case p == "/webhooks" && r.Method == http.MethodGet:
+		list := []map[string]any{}
+		for _, x := range f.webhooks {
+			list = append(list, map[string]any{"id": x.ID, "name": x.Name, "url": x.URL, "event_types": x.EventTypes, "headers": map[string]string{}, // redacted
+				"enabled": *x.Enabled, "description": x.Description, "format": x.Format})
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i]["id"].(string) < list[j]["id"].(string) })
+		jsonOut(w, 200, map[string]any{"subscriptions": list})
+	case len(parts) == 2 && parts[0] == "webhooks" && r.Method == http.MethodPatch:
+		x := f.webhooks[parts[1]]
+		if x == nil {
+			jsonOut(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		var in fakeWebhook
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Name != "" {
+			x.Name = in.Name
+		}
+		if in.URL != "" {
+			x.URL = in.URL
+		}
+		if in.EventTypes != nil {
+			x.EventTypes = in.EventTypes
+		}
+		if in.Enabled != nil {
+			x.Enabled = in.Enabled
+		}
+		x.Description = in.Description
+		if in.Format != "" {
+			x.Format = in.Format
+		}
+		jsonOut(w, 200, map[string]any{"updated": true})
+	case len(parts) == 2 && parts[0] == "webhooks" && r.Method == http.MethodDelete:
+		if f.webhooks[parts[1]] == nil {
+			jsonOut(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		delete(f.webhooks, parts[1])
+		jsonOut(w, 200, map[string]any{"deleted": true})
+	case p == "/spend/budgets" && r.Method == http.MethodPut:
+		var b fakeBudget
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		if b.Scope == "" || b.Ref == "" {
+			jsonOut(w, 400, map[string]any{"error": "scope and ref"})
+			return
+		}
+		if b.MonthlyUSD == nil && b.MonthlyTokens == nil {
+			delete(f.budgets, b.Scope+":"+b.Ref)
+		} else {
+			f.budgets[b.Scope+":"+b.Ref] = &b
+		}
+		jsonOut(w, 200, b)
+	case p == "/spend/budgets" && r.Method == http.MethodGet:
+		list := []*fakeBudget{}
+		for _, b := range f.budgets {
+			list = append(list, b)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Scope+list[i].Ref < list[j].Scope+list[j].Ref })
+		jsonOut(w, 200, map[string]any{"budgets": list})
 	case p == "/policies" && r.Method == http.MethodPost:
 		var body struct {
 			PPL string `json:"ppl_source"`

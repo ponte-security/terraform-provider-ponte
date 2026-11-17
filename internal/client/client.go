@@ -17,10 +17,11 @@ import (
 
 // Client talks to one Ponte control plane as one operator.
 type Client struct {
-	Endpoint  string
-	Token     string
-	UserAgent string
-	HTTP      *http.Client
+	Endpoint    string
+	Token       string
+	UserAgent   string
+	HTTP        *http.Client
+	apiEndpoint string
 }
 
 // New builds a client. endpoint is the control plane base, e.g. https://app.ponte.ai/api/control.
@@ -59,8 +60,12 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &e) && e.Status == http.StatusNotFound
 }
 
-// Do sends a JSON request and decodes a JSON answer into out (nil to discard).
+// Do sends a JSON request to the control plane and decodes a JSON answer into out (nil to discard).
 func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
+	return c.do(ctx, c.Endpoint, method, path, in, out)
+}
+
+func (c *Client) do(ctx context.Context, base, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
@@ -69,7 +74,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.Endpoint+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
 		return err
 	}
@@ -250,4 +255,131 @@ func (c *Client) BindPolicy(ctx context.Context, agentID, policyID string) error
 
 func (c *Client) UnbindPolicy(ctx context.Context, agentID, policyID string) error {
 	return c.Do(ctx, http.MethodDelete, "/v1/agents/"+agentID+"/policy-bindings/"+policyID, nil, nil)
+}
+
+// ── The api side (…/api/v1): webhooks and budgets live on the api, not the control plane ──
+
+// APIEndpoint is the api base (…/api). Derived from Endpoint when unset: the control plane is
+// mounted at …/api/control, so the api is its parent.
+func (c *Client) APIEndpoint() string {
+	if c.apiEndpoint != "" {
+		return c.apiEndpoint
+	}
+	return strings.TrimSuffix(c.Endpoint, "/control")
+}
+
+// SetAPIEndpoint overrides the api base.
+func (c *Client) SetAPIEndpoint(s string) {
+	c.apiEndpoint = strings.TrimRight(strings.TrimSpace(s), "/")
+}
+
+// DoAPI is Do against the api base. Resources run concurrently, so the base is passed, never
+// swapped on the client.
+func (c *Client) DoAPI(ctx context.Context, method, path string, in, out any) error {
+	return c.do(ctx, c.APIEndpoint(), method, path, in, out)
+}
+
+// Webhook is an outbound webhook subscription. Headers come back redacted from the api.
+type Webhook struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	EventTypes   []string          `json:"event_types"`
+	Headers      map[string]string `json:"headers"`
+	Enabled      bool              `json:"enabled"`
+	Description  string            `json:"description"`
+	Format       string            `json:"format"`
+	FormatConfig json.RawMessage   `json:"format_config"`
+}
+
+// WebhookInput is what create takes; update sends the same fields (all of them).
+type WebhookInput struct {
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	EventTypes   []string          `json:"event_types"`
+	Headers      map[string]string `json:"headers"`
+	Description  string            `json:"description"`
+	Enabled      *bool             `json:"enabled,omitempty"`
+	Format       string            `json:"format,omitempty"`
+	FormatConfig json.RawMessage   `json:"format_config,omitempty"`
+}
+
+// CreateWebhook creates a subscription and returns it with the signing secret (shown once).
+func (c *Client) CreateWebhook(ctx context.Context, in WebhookInput) (*Webhook, string, error) {
+	var out struct {
+		ID            string `json:"id"`
+		SigningSecret string `json:"signing_secret"`
+	}
+	if err := c.DoAPI(ctx, http.MethodPost, "/v1/webhooks", in, &out); err != nil {
+		return nil, "", err
+	}
+	w, err := c.GetWebhook(ctx, out.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	return w, out.SigningSecret, nil
+}
+
+// GetWebhook reads one subscription (through the list; the api has no single-item read).
+func (c *Client) GetWebhook(ctx context.Context, id string) (*Webhook, error) {
+	var out struct {
+		Subscriptions []Webhook `json:"subscriptions"`
+	}
+	if err := c.DoAPI(ctx, http.MethodGet, "/v1/webhooks", nil, &out); err != nil {
+		return nil, err
+	}
+	for i := range out.Subscriptions {
+		if out.Subscriptions[i].ID == id {
+			return &out.Subscriptions[i], nil
+		}
+	}
+	return nil, &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: "/v1/webhooks/" + id, Body: "not found"}
+}
+
+// UpdateWebhook patches every field of a subscription.
+func (c *Client) UpdateWebhook(ctx context.Context, id string, in WebhookInput) error {
+	body := map[string]any{"name": in.Name, "url": in.URL, "event_types": in.EventTypes, "headers": in.Headers, "description": in.Description}
+	if in.Enabled != nil {
+		body["enabled"] = *in.Enabled
+	}
+	if in.Format != "" {
+		body["format"] = in.Format
+	}
+	if len(in.FormatConfig) > 0 {
+		body["format_config"] = in.FormatConfig
+	}
+	return c.DoAPI(ctx, http.MethodPatch, "/v1/webhooks/"+id, body, nil)
+}
+
+func (c *Client) DeleteWebhook(ctx context.Context, id string) error {
+	return c.DoAPI(ctx, http.MethodDelete, "/v1/webhooks/"+id, nil, nil)
+}
+
+// Budget is one spend budget on a scope.
+type Budget struct {
+	Scope         string   `json:"scope"`
+	Ref           string   `json:"ref"`
+	MonthlyUSD    *float64 `json:"monthly_usd"`
+	MonthlyTokens *int64   `json:"monthly_tokens"`
+}
+
+// PutBudget sets (or, with both limits nil, clears) a budget.
+func (c *Client) PutBudget(ctx context.Context, b Budget) error {
+	return c.DoAPI(ctx, http.MethodPut, "/v1/spend/budgets", b, nil)
+}
+
+// GetBudget finds a budget by scope and ref; nil when none.
+func (c *Client) GetBudget(ctx context.Context, scope, ref string) (*Budget, error) {
+	var out struct {
+		Budgets []Budget `json:"budgets"`
+	}
+	if err := c.DoAPI(ctx, http.MethodGet, "/v1/spend/budgets", nil, &out); err != nil {
+		return nil, err
+	}
+	for i := range out.Budgets {
+		if out.Budgets[i].Scope == scope && out.Budgets[i].Ref == ref {
+			return &out.Budgets[i], nil
+		}
+	}
+	return nil, nil
 }

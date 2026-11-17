@@ -27,8 +27,9 @@ type ponteProvider struct {
 }
 
 type providerModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	Token    types.String `tfsdk:"token"`
+	Endpoint    types.String `tfsdk:"endpoint"`
+	APIEndpoint types.String `tfsdk:"api_endpoint"`
+	Token       types.String `tfsdk:"token"`
 }
 
 func (p *ponteProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -43,6 +44,10 @@ func (p *ponteProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp
 			"endpoint": schema.StringAttribute{
 				Optional:    true,
 				Description: "The control plane base URL, e.g. https://app.ponte.ai/api/control. Defaults to PONTE_API_URL.",
+			},
+			"api_endpoint": schema.StringAttribute{
+				Optional:    true,
+				Description: "The api base URL for webhooks and budgets, e.g. https://app.ponte.ai/api. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).",
 			},
 			"token": schema.StringAttribute{
 				Optional:    true,
@@ -77,6 +82,11 @@ func (p *ponteProvider) Configure(ctx context.Context, req provider.ConfigureReq
 		return
 	}
 	c := client.New(endpoint, token, "terraform-provider-ponte/"+p.version)
+	if api := strings.TrimSpace(cfg.APIEndpoint.ValueString()); api != "" {
+		c.SetAPIEndpoint(api)
+	} else if api := strings.TrimSpace(os.Getenv("PONTE_API_BASE_URL")); api != "" {
+		c.SetAPIEndpoint(api)
+	}
 	resp.ResourceData = c
 	resp.DataSourceData = c
 }
@@ -87,6 +97,8 @@ func (p *ponteProvider) Resources(_ context.Context) []func() resource.Resource 
 		newAgentGroupResource,
 		newAgentGroupMemberResource,
 		newPolicyBindingResource,
+		newWebhookResource,
+		newSpendBudgetResource,
 	}
 }
 
