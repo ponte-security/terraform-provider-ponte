@@ -64,6 +64,7 @@ type fakeAPI struct {
 	members  map[string]map[string]bool // group → agent set
 	bindings map[string]map[string]bool // agent → policy id set
 	calls    []string
+	mcp      map[string]*fakeMCPServer
 }
 
 func newFakeAPI(token string) *fakeAPI {
@@ -365,6 +366,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(f.bindings[parts[1]], parts[3])
 		w.WriteHeader(204)
 	default:
+		if f.serveMCP(w, r, parts) {
+			return
+		}
 		jsonOut(w, 404, map[string]any{"error": "no route " + r.Method + " " + r.URL.Path})
 	}
 }

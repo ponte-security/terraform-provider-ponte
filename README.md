@@ -1,6 +1,6 @@
 # terraform-provider-ponte
 
-Ponte authorization resources as code: policies, agent groups, memberships and policy bindings, through the control plane's operator API.
+Ponte authorization resources as code: policies, agent groups, memberships, policy bindings, webhooks, spend budgets and MCP servers, through the operator API.
 
 ```hcl
 terraform {
@@ -49,7 +49,10 @@ resource "ponte_policy_binding" "claims_bot_budget" {
 | `ponte_webhook` | `wh_…` | an outbound subscription: name, url, event_types (`["*"]` for all), headers (sensitive, not read back), enabled, format `ponte` or `udm`, format_config. `signing_secret` is computed on create and kept in state (sensitive). |
 | `ponte_spend_budget` | `scope:ref` | a monthly model-spend budget on `org` (ref omitted), `team`, `owner` (`user:…` / `group:…`), `agent`, or `model`; `monthly_usd` and/or `monthly_tokens`. Destroy clears it. |
 
-Webhooks and budgets live on the api (`…/api`) rather than the control plane (`…/api/control`); the provider derives the api base from `endpoint`, or takes `api_endpoint` / `PONTE_API_BASE_URL`. The same operator token authorizes both.
+| `ponte_mcp_server` | `res_…` | a registered MCP server: name, endpoint_url, data_classification, environment, owner, require_tool_review. Policies can refuse unregistered servers. A changed `endpoint_url` replaces the resource (pinned tools belong to the endpoint); everything else is edited in place and keeps the pins. Destroy deregisters the server and deletes its pins, proxy configuration and sync credential. Import by id. |
+| `ponte_mcp_tool_risk_tier` | `server_id/tool` | the declared risk tier of one tool: `read`, `write`, `external_send`, `destructive` or `code_exec`. Policies read the declared tier. The tool must be pinned first (sync the server), otherwise apply fails with "tool not pinned". Destroy leaves the declaration in Ponte (there is no clear) and warns. |
+
+Webhooks, budgets and MCP servers live on the api (`…/api`) rather than the control plane (`…/api/control`); the provider derives the api base from `endpoint`, or takes `api_endpoint` / `PONTE_API_BASE_URL`. The same operator token authorizes both.
 
 ## Authentication
 
@@ -75,4 +78,4 @@ Publishing to the Terraform Registry needs a release workflow (goreleaser, GPG-s
 
 ## Not yet covered
 
-Registry resources (MCP servers) and tool approvals, SCIM targets, recert policies, data sources for agents. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.
+MCP proxy configuration and sync credentials, tool approvals (an approval is a human review of one definition, so it stays in the console), SCIM targets, recert policies, data sources for agents. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.

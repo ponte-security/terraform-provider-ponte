@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -382,4 +383,131 @@ func (c *Client) GetBudget(ctx context.Context, scope, ref string) (*Budget, err
 		}
 	}
 	return nil, nil
+}
+
+// ── MCP servers (api side for register / list / delete / review mode; the control plane's
+// registry for an edit in place) ──
+
+// MCPServer is a registered MCP server (the fields the provider reads).
+type MCPServer struct {
+	ResourceID         string `json:"resource_id"`
+	Name               string `json:"name"`
+	EndpointURL        string `json:"endpoint_url"`
+	DataClassification string `json:"data_classification"`
+	Environment        string `json:"environment"`
+	Owner              string `json:"owner"`
+	Status             string `json:"status"`
+	RequireToolReview  bool   `json:"require_tool_review"`
+}
+
+// MCPServerInput is what register and update take.
+type MCPServerInput struct {
+	Name               string `json:"name"`
+	EndpointURL        string `json:"endpoint_url"`
+	DataClassification string `json:"data_classification"`
+	Environment        string `json:"environment"`
+	Owner              string `json:"owner"`
+}
+
+// RegisterMCPServer registers a server and returns its id. The api refuses a second
+// registration of the same endpoint (409).
+func (c *Client) RegisterMCPServer(ctx context.Context, in MCPServerInput) (string, error) {
+	var out struct {
+		ResourceID string `json:"resource_id"`
+	}
+	if err := c.DoAPI(ctx, http.MethodPost, "/v1/mcp-servers", in, &out); err != nil {
+		return "", err
+	}
+	return out.ResourceID, nil
+}
+
+// GetMCPServer reads one server (through the list; the api has no single-item read).
+func (c *Client) GetMCPServer(ctx context.Context, id string) (*MCPServer, error) {
+	var out struct {
+		Servers []MCPServer `json:"mcp_servers"`
+	}
+	if err := c.DoAPI(ctx, http.MethodGet, "/v1/mcp-servers", nil, &out); err != nil {
+		return nil, err
+	}
+	for i := range out.Servers {
+		if out.Servers[i].ResourceID == id {
+			return &out.Servers[i], nil
+		}
+	}
+	return nil, &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: "/v1/mcp-servers/" + id, Body: "not found"}
+}
+
+// mcpServerOwnedMetadata are the metadata members the control plane writes itself. They are
+// left out of an update so the server carries its current values across (a sync may have
+// written them since the read); sending a copy read a moment ago could put an old one back.
+var mcpServerOwnedMetadata = []string{"mcp_proxy_identity", "sync", "require_tool_review"}
+
+// UpdateMCPServer changes name, classification, environment and owner in place. The registry
+// update replaces the whole record, so the record is read and sent back with only those four
+// fields changed: pinned tools, the proxy identity and the sync state are untouched.
+func (c *Client) UpdateMCPServer(ctx context.Context, id string, in MCPServerInput) error {
+	var cur map[string]any
+	if err := c.Do(ctx, http.MethodGet, "/v1/registry/resources/"+id, nil, &cur); err != nil {
+		return err
+	}
+	if cur == nil {
+		return &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: "/v1/registry/resources/" + id, Body: "not found"}
+	}
+	cur["name"] = in.Name
+	cur["data_classification"] = in.DataClassification
+	cur["environment"] = in.Environment
+	cur["owner"] = in.Owner
+	meta, _ := cur["metadata"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	for _, k := range mcpServerOwnedMetadata {
+		delete(meta, k)
+	}
+	cur["metadata"] = meta
+	// The read leaves out empty members; the update stores a missing one as JSON null, which
+	// later writes to the record (the review mode, the sync state) cannot build on.
+	for _, k := range []string{"auth_mechanisms", "sensitivity_labels", "tools_exposed"} {
+		if cur[k] == nil {
+			cur[k] = []any{}
+		}
+	}
+	return c.Do(ctx, http.MethodPut, "/v1/registry/resources/"+id, cur, nil)
+}
+
+// SetMCPServerReviewMode sets whether a newly seen tool waits for approval before use.
+func (c *Client) SetMCPServerReviewMode(ctx context.Context, id string, require bool) error {
+	return c.DoAPI(ctx, http.MethodPut, "/v1/mcp-servers/"+id+"/review-mode", map[string]any{"require_review": require}, nil)
+}
+
+// DeleteMCPServer deregisters a server with its pinned tools, proxy config and sync credential.
+func (c *Client) DeleteMCPServer(ctx context.Context, id string) error {
+	return c.DoAPI(ctx, http.MethodDelete, "/v1/mcp-servers/"+id, nil, nil)
+}
+
+// ToolRiskTier reads a pinned tool's declared risk tier ("" when undeclared). A tool that is
+// not pinned for the server is a 404.
+func (c *Client) ToolRiskTier(ctx context.Context, serverID, tool string) (string, error) {
+	var out struct {
+		Tools []struct {
+			Tool     string `json:"tool"`
+			RiskTier string `json:"risk_tier"`
+		} `json:"tools"`
+	}
+	path := "/v1/mcp-servers/" + serverID + "/tool-definitions"
+	if err := c.DoAPI(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return "", err
+	}
+	for _, t := range out.Tools {
+		if t.Tool == tool {
+			return t.RiskTier, nil
+		}
+	}
+	return "", &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: path + "/" + tool, Body: "tool not pinned for this server"}
+}
+
+// DeclareToolRiskTier declares what a pinned tool can do: read, write, external_send,
+// destructive or code_exec.
+func (c *Client) DeclareToolRiskTier(ctx context.Context, serverID, tool, tier string) error {
+	return c.DoAPI(ctx, http.MethodPost, "/v1/mcp-servers/"+serverID+"/tool-definitions/"+url.PathEscape(tool)+"/risk-tier", map[string]any{"risk_tier": tier}, nil)
 }

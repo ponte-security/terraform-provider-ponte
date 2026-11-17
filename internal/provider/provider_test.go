@@ -289,3 +289,117 @@ resource "ponte_spend_budget" "org" {
 		t.Fatalf("destroy cleans up: webhooks %d budgets %d", len(f.webhooks), len(f.budgets))
 	}
 }
+
+func TestAccMCPServerAndRiskTier(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC not set")
+	}
+	f, ts := startFake(testToken)
+	defer ts.Close()
+	server := func(name, classification string, review bool) string {
+		return providerBlock(ts.URL) + fmt.Sprintf(`
+resource "ponte_mcp_server" "crm" {
+  name                = %q
+  endpoint_url        = "https://mcp.example.com/crm"
+  data_classification = %q
+  environment         = "production"
+  owner               = "crm-platform@example.com"
+  require_tool_review = %t
+}
+`, name, classification, review)
+	}
+	tier := func(tier string) string {
+		return fmt.Sprintf(`
+resource "ponte_mcp_tool_risk_tier" "delete_account" {
+  server_id = ponte_mcp_server.crm.id
+  tool      = "delete_account"
+  risk_tier = %q
+}
+`, tier)
+	}
+	var serverID string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: providerFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: server("CRM", "confidential", true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestMatchResourceAttr("ponte_mcp_server.crm", "id", regexp.MustCompile(`^res_`)),
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "status", "active"),
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "require_tool_review", "true"),
+					func(s *terraform.State) error {
+						serverID = s.RootModule().Resources["ponte_mcp_server.crm"].Primary.ID
+						return nil
+					},
+				),
+			},
+			{
+				// A tier cannot be declared for a tool Ponte has not pinned.
+				Config:      server("CRM", "confidential", true) + tier("destructive"),
+				ExpectError: regexp.MustCompile(`tool not pinned`),
+			},
+			{
+				// After a sync the tool is pinned. Rename and reclassify in place: the pins, the
+				// tool list and the server-owned metadata survive the registry's whole-record update.
+				PreConfig: func() { f.pinTools(serverID, "delete_account", "get_account") },
+				Config:    server("CRM (prod)", "restricted", false) + tier("destructive"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "name", "CRM (prod)"),
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "data_classification", "restricted"),
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "require_tool_review", "false"),
+					resource.TestCheckResourceAttr("ponte_mcp_tool_risk_tier.delete_account", "risk_tier", "destructive"),
+					func(s *terraform.State) error {
+						if s.RootModule().Resources["ponte_mcp_server.crm"].Primary.ID != serverID {
+							return fmt.Errorf("the server was replaced, not updated in place")
+						}
+						srv := f.mcpByName("CRM (prod)")
+						if srv == nil {
+							return fmt.Errorf("server not renamed")
+						}
+						meta := srv.Record["metadata"].(map[string]any)
+						if meta["mcp_proxy_identity"] == nil || meta["sync"] == nil {
+							return fmt.Errorf("server-owned metadata lost in the update: %v", meta)
+						}
+						if len(srv.Nulls) != 0 {
+							return fmt.Errorf("the update left out %v, which the registry stores as null", srv.Nulls)
+						}
+						if tools, _ := srv.Record["tools_exposed"].([]any); len(tools) != 2 {
+							return fmt.Errorf("tool list lost in the update: %v", srv.Record["tools_exposed"])
+						}
+						if len(srv.Pins) != 2 || srv.Pins["delete_account"] != "destructive" || srv.Pins["get_account"] != "" {
+							return fmt.Errorf("pins: %v", srv.Pins)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Only the review mode changes: no registry update is sent.
+				Config: server("CRM (prod)", "restricted", true) + tier("code_exec"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("ponte_mcp_server.crm", "require_tool_review", "true"),
+					resource.TestCheckResourceAttr("ponte_mcp_tool_risk_tier.delete_account", "risk_tier", "code_exec"),
+					func(*terraform.State) error {
+						if n := f.mcpByName("CRM (prod)").Replaced; n != 1 {
+							return fmt.Errorf("registry updates: %d, want 1", n)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				ResourceName:      "ponte_mcp_server.crm",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				ResourceName:      "ponte_mcp_tool_risk_tier.delete_account",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+	if len(f.mcp) != 0 {
+		t.Fatalf("destroy deregisters the server: %d left", len(f.mcp))
+	}
+}

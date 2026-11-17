@@ -39,7 +39,7 @@ func (p *ponteProvider) Metadata(_ context.Context, _ provider.MetadataRequest, 
 
 func (p *ponteProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manage Ponte authorization resources: policies, agent groups, memberships and policy bindings.",
+		Description: "Manage Ponte authorization resources: policies, agent groups, memberships, policy bindings, webhooks, spend budgets and MCP servers.",
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
 				Optional:    true,
@@ -47,7 +47,7 @@ func (p *ponteProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp
 			},
 			"api_endpoint": schema.StringAttribute{
 				Optional:    true,
-				Description: "The api base URL for webhooks and budgets, e.g. https://app.ponte.ai/api. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).",
+				Description: "The api base URL for webhooks, budgets and MCP servers, e.g. https://app.ponte.ai/api. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).",
 			},
 			"token": schema.StringAttribute{
 				Optional:    true,
@@ -99,6 +99,8 @@ func (p *ponteProvider) Resources(_ context.Context) []func() resource.Resource 
 		newPolicyBindingResource,
 		newWebhookResource,
 		newSpendBudgetResource,
+		newMCPServerResource,
+		newMCPToolRiskTierResource,
 	}
 }
 

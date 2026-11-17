@@ -49,3 +49,20 @@ output "group_id" {
 output "policy" {
   value = { name = ponte_policy.drift_guard.name, id = ponte_policy.drift_guard.policy_id, version = ponte_policy.drift_guard.version }
 }
+
+# An MCP server the fleet may use. Policies can refuse servers that are not registered.
+resource "ponte_mcp_server" "crm" {
+  name                = "CRM"
+  endpoint_url        = "https://mcp.example.com/crm"
+  data_classification = "confidential"
+  environment         = "production"
+  owner               = "crm-platform@example.com"
+  require_tool_review = true # a newly seen tool is denied until an operator approves it
+}
+
+# Declare what a tool can do, once the server has been synced and the tool is pinned.
+resource "ponte_mcp_tool_risk_tier" "crm_delete_account" {
+  server_id = ponte_mcp_server.crm.id
+  tool      = "delete_account"
+  risk_tier = "destructive"
+}
