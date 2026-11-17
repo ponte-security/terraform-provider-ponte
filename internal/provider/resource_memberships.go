@@ -186,7 +186,8 @@ func (r *policyBindingResource) Read(ctx context.Context, req resource.ReadReque
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func (r *policyBindingResource) Update(_ context.Context, _ resource.UpdateRequest, _ *resource.UpdateResponse) {}
+func (r *policyBindingResource) Update(_ context.Context, _ resource.UpdateRequest, _ *resource.UpdateResponse) {
+}
 
 func (r *policyBindingResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state policyBindingModel

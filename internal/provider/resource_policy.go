@@ -46,9 +46,9 @@ func (r *policyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 	resp.Schema = schema.Schema{
 		Description: "A Ponte policy (PPL YAML). Identified by its metadata.name; every change to the YAML saves a new version and archives the previous one. Agents bound to the policy follow the name.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{Computed: true, Description: "The policy name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"id":   schema.StringAttribute{Computed: true, Description: "The policy name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"name": schema.StringAttribute{Computed: true, Description: "metadata.name from the YAML.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"ppl": schema.StringAttribute{Required: true, Description: "The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). Changing it saves a new version."},
+			"ppl":  schema.StringAttribute{Required: true, Description: "The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). Changing it saves a new version."},
 			"enforcement_mode": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("enforce"),
 				Description: "enforce (the verdict binds decisions) or observe (evaluated and recorded, never binding)."},
 			"policy_id":   schema.StringAttribute{Computed: true, Description: "The id of the active version. Changes on every edit."},

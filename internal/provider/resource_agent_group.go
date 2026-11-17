@@ -39,12 +39,12 @@ func (r *agentGroupResource) Schema(_ context.Context, _ resource.SchemaRequest,
 	resp.Schema = schema.Schema{
 		Description: "An agent group. Policies target groups through subjects; agents join through ponte_agent_group_member.",
 		Attributes: map[string]schema.Attribute{
-			"id":          schema.StringAttribute{Computed: true, Description: "The group id (grp_…).", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"name":        schema.StringAttribute{Required: true, Description: "Display name."},
-			"description": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
-			"trust_level": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("associate"), Description: "The group's trust level (associate by default)."},
-			"owner":       schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("unknown"), Description: "The owning person or team."},
-			"tags":        schema.ListAttribute{ElementType: types.StringType, Optional: true, Description: "Free-form tags."},
+			"id":                    schema.StringAttribute{Computed: true, Description: "The group id (grp_…).", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"name":                  schema.StringAttribute{Required: true, Description: "Display name."},
+			"description":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
+			"trust_level":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("associate"), Description: "The group's trust level (associate by default)."},
+			"owner":                 schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("unknown"), Description: "The owning person or team."},
+			"tags":                  schema.ListAttribute{ElementType: types.StringType, Optional: true, Description: "Free-form tags."},
 			"max_concurrent_agents": schema.Int64Attribute{Optional: true, Description: "Cap on simultaneously active member agents."},
 		},
 	}
