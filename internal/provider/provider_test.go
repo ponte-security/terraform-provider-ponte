@@ -231,6 +231,10 @@ func TestAccWebhookAndBudget(t *testing.T) {
 	f, ts := startFake(testToken)
 	defer ts.Close()
 	cfg := func(name string, usd float64, enabled bool) string {
+		minSeverity := ""
+		if !enabled {
+			minSeverity = `min_severity = "medium"`
+		}
 		return providerBlock(ts.URL) + fmt.Sprintf(`
 resource "ponte_webhook" "siem" {
   name        = %q
@@ -238,6 +242,7 @@ resource "ponte_webhook" "siem" {
   event_types = ["authz.decision", "receipt.issued"]
   headers     = { Authorization = "Bearer siem-token" }
   enabled     = %t
+  %s
 }
 
 resource "ponte_spend_budget" "team" {
@@ -250,7 +255,7 @@ resource "ponte_spend_budget" "org" {
   scope          = "org"
   monthly_tokens = 5000000
 }
-`, name, enabled, usd)
+`, name, enabled, minSeverity, usd)
 	}
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: providerFactories(),
@@ -262,6 +267,8 @@ resource "ponte_spend_budget" "org" {
 					resource.TestMatchResourceAttr("ponte_webhook.siem", "signing_secret", regexp.MustCompile(`^whsec_`)),
 					resource.TestCheckResourceAttr("ponte_webhook.siem", "event_types.#", "2"),
 					resource.TestCheckResourceAttr("ponte_webhook.siem", "format", "ponte"),
+					// Security findings: critical and high unless the configuration asks for more.
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "min_severity", "high"),
 					resource.TestCheckResourceAttr("ponte_spend_budget.team", "id", "team:claims"),
 					resource.TestCheckResourceAttr("ponte_spend_budget.org", "ref", "*"),
 					resource.TestCheckResourceAttr("ponte_spend_budget.org", "monthly_tokens", "5000000"),
@@ -273,6 +280,7 @@ resource "ponte_spend_budget" "org" {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("ponte_webhook.siem", "name", "SIEM (paused)"),
 					resource.TestCheckResourceAttr("ponte_webhook.siem", "enabled", "false"),
+					resource.TestCheckResourceAttr("ponte_webhook.siem", "min_severity", "medium"),
 					resource.TestMatchResourceAttr("ponte_webhook.siem", "signing_secret", regexp.MustCompile(`^whsec_`)),
 					resource.TestCheckResourceAttr("ponte_spend_budget.team", "monthly_usd", "250"),
 				),

@@ -44,6 +44,7 @@ type fakeWebhook struct {
 	Description string   `json:"description"`
 	Enabled     *bool    `json:"enabled"`
 	Format      string   `json:"format"`
+	MinSeverity string   `json:"min_severity"`
 }
 
 type fakeBudget struct {
@@ -121,13 +122,21 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			t := true
 			in.Enabled = &t
 		}
+		switch in.MinSeverity {
+		case "":
+			in.MinSeverity = "high"
+		case "critical", "high", "medium":
+		default:
+			jsonOut(w, 400, map[string]any{"error": "min_severity must be critical, high or medium"})
+			return
+		}
 		f.webhooks[in.ID] = &in
 		jsonOut(w, 201, map[string]any{"id": in.ID, "signing_secret": "whsec_" + in.ID})
 	case p == "/webhooks" && r.Method == http.MethodGet:
 		list := []map[string]any{}
 		for _, x := range f.webhooks {
 			list = append(list, map[string]any{"id": x.ID, "name": x.Name, "url": x.URL, "event_types": x.EventTypes, "headers": map[string]string{}, // redacted
-				"enabled": *x.Enabled, "description": x.Description, "format": x.Format})
+				"enabled": *x.Enabled, "description": x.Description, "format": x.Format, "min_severity": x.MinSeverity})
 		}
 		sort.Slice(list, func(i, j int) bool { return list[i]["id"].(string) < list[j]["id"].(string) })
 		jsonOut(w, 200, map[string]any{"subscriptions": list})
@@ -154,6 +163,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		x.Description = in.Description
 		if in.Format != "" {
 			x.Format = in.Format
+		}
+		if in.MinSeverity != "" {
+			x.MinSeverity = in.MinSeverity
 		}
 		jsonOut(w, 200, map[string]any{"updated": true})
 	case len(parts) == 2 && parts[0] == "webhooks" && r.Method == http.MethodDelete:

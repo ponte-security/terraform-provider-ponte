@@ -291,6 +291,7 @@ type Webhook struct {
 	Description  string            `json:"description"`
 	Format       string            `json:"format"`
 	FormatConfig json.RawMessage   `json:"format_config"`
+	MinSeverity  string            `json:"min_severity"`
 }
 
 // WebhookInput is what create takes; update sends the same fields (all of them).
@@ -303,6 +304,7 @@ type WebhookInput struct {
 	Enabled      *bool             `json:"enabled,omitempty"`
 	Format       string            `json:"format,omitempty"`
 	FormatConfig json.RawMessage   `json:"format_config,omitempty"`
+	MinSeverity  string            `json:"min_severity,omitempty"`
 }
 
 // CreateWebhook creates a subscription and returns it with the signing secret (shown once).
@@ -348,6 +350,9 @@ func (c *Client) UpdateWebhook(ctx context.Context, id string, in WebhookInput) 
 	}
 	if len(in.FormatConfig) > 0 {
 		body["format_config"] = in.FormatConfig
+	}
+	if in.MinSeverity != "" {
+		body["min_severity"] = in.MinSeverity
 	}
 	return c.DoAPI(ctx, http.MethodPatch, "/v1/webhooks/"+id, body, nil)
 }

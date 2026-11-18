@@ -33,6 +33,7 @@ type webhookModel struct {
 	Enabled       types.Bool   `tfsdk:"enabled"`
 	Format        types.String `tfsdk:"format"`
 	FormatConfig  types.String `tfsdk:"format_config"`
+	MinSeverity   types.String `tfsdk:"min_severity"`
 	SigningSecret types.String `tfsdk:"signing_secret"`
 }
 
@@ -54,6 +55,7 @@ func (r *webhookResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"description":   schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
 			"enabled":       schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(true)},
 			"format":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("ponte"), Description: "ponte or udm."},
+			"min_severity":  schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("high"), Description: "Lowest level of security finding (governance.alert) delivered: critical, high or medium. Other event types are not filtered. Low findings are never sent."},
 			"format_config": schema.StringAttribute{Optional: true, Description: "JSON overrides for the udm mapping (event_type_map, product_name, vendor_name, default_event_type)."},
 			"signing_secret": schema.StringAttribute{Computed: true, Sensitive: true, Description: "The HMAC secret Ponte signs deliveries with (X-Ponte-Signature). Returned once on create.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
@@ -66,7 +68,7 @@ func (r *webhookResource) Configure(_ context.Context, req resource.ConfigureReq
 }
 
 func (m *webhookModel) input(ctx context.Context) client.WebhookInput {
-	in := client.WebhookInput{Name: m.Name.ValueString(), URL: m.URL.ValueString(), Description: m.Description.ValueString(), Format: m.Format.ValueString(), EventTypes: []string{}, Headers: map[string]string{}}
+	in := client.WebhookInput{Name: m.Name.ValueString(), URL: m.URL.ValueString(), Description: m.Description.ValueString(), Format: m.Format.ValueString(), MinSeverity: m.MinSeverity.ValueString(), EventTypes: []string{}, Headers: map[string]string{}}
 	_ = m.EventTypes.ElementsAs(ctx, &in.EventTypes, false)
 	if !m.Headers.IsNull() && !m.Headers.IsUnknown() {
 		_ = m.Headers.ElementsAs(ctx, &in.Headers, false)
@@ -91,6 +93,11 @@ func (m *webhookModel) fill(ctx context.Context, w *client.Webhook) {
 		f = "ponte"
 	}
 	m.Format = types.StringValue(f)
+	sev := w.MinSeverity
+	if sev == "" {
+		sev = "high" // an api that predates the field delivers critical and high
+	}
+	m.MinSeverity = types.StringValue(sev)
 	ev, _ := types.ListValueFrom(ctx, types.StringType, w.EventTypes)
 	if len(w.EventTypes) == 0 {
 		ev, _ = types.ListValueFrom(ctx, types.StringType, []string{})
