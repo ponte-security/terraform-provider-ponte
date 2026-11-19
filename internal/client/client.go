@@ -516,3 +516,58 @@ func (c *Client) ToolRiskTier(ctx context.Context, serverID, tool string) (strin
 func (c *Client) DeclareToolRiskTier(ctx context.Context, serverID, tool, tier string) error {
 	return c.DoAPI(ctx, http.MethodPost, "/v1/mcp-servers/"+serverID+"/tool-definitions/"+url.PathEscape(tool)+"/risk-tier", map[string]any{"risk_tier": tier}, nil)
 }
+
+// ── Agents (read only: agents are registered and onboarded in Ponte, not in Terraform) ──
+
+// Agent is a registered agent (the fields the provider reads).
+type Agent struct {
+	AgentID     string            `json:"agent_id"`
+	DisplayName string            `json:"display_name"`
+	Framework   string            `json:"framework"`
+	Status      string            `json:"status"`
+	Labels      map[string]string `json:"labels"`
+	TrustTier   string            `json:"trust_tier"`
+	Tools       []string          `json:"tool_manifest"`
+}
+
+// GetAgent reads one agent by id.
+func (c *Client) GetAgent(ctx context.Context, id string) (*Agent, error) {
+	var a Agent
+	if err := c.Do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// agentPageSize is how many agents one list call asks for: the api's maximum. Asking for more
+// does not get more, it gets the api's default of 50.
+const agentPageSize = 100
+
+// ListAgents returns the org's agents, optionally narrowed by a search term and a status. It
+// walks every page, advancing by what each page actually returned and stopping at an empty
+// one: a lookup that trusted its own page size would stop early if the api clamps it, miss an
+// agent and say it does not exist.
+func (c *Client) ListAgents(ctx context.Context, search, status string) ([]Agent, error) {
+	var all []Agent
+	for offset := 0; offset < 1000000; {
+		q := url.Values{"limit": {fmt.Sprint(agentPageSize)}, "offset": {fmt.Sprint(offset)}}
+		if search != "" {
+			q.Set("q", search)
+		}
+		if status != "" {
+			q.Set("status", status)
+		}
+		var out struct {
+			Agents []Agent `json:"agents"`
+		}
+		if err := c.Do(ctx, http.MethodGet, "/v1/agents?"+q.Encode(), nil, &out); err != nil {
+			return nil, err
+		}
+		if len(out.Agents) == 0 {
+			break
+		}
+		all = append(all, out.Agents...)
+		offset += len(out.Agents)
+	}
+	return all, nil
+}

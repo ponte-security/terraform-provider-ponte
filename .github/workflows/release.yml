@@ -1,0 +1,48 @@
+# Publishes a provider release when a version tag is pushed.
+#
+# The Terraform Registry only reads a public repository named terraform-provider-ponte whose
+# releases sit at its root. This directory is laid out to be that repository: mirror it there
+# (git subtree split), push a tag v1.2.3, and this workflow builds, signs and publishes.
+# Secrets: GPG_PRIVATE_KEY and PASSPHRASE for the key registered with the Registry namespace.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: go vet ./...
+      - run: go test ./...
+        env:
+          TF_ACC: "1"
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: crazy-max/ghaction-import-gpg@v6
+        id: gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}

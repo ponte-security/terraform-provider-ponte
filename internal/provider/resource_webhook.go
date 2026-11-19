@@ -181,5 +181,10 @@ func (r *webhookResource) ImportState(ctx context.Context, req resource.ImportSt
 	var m webhookModel
 	m.fill(ctx, w)
 	m.SigningSecret = types.StringValue("") // only ever shown on create
+	// The api does not return headers (they may carry a credential) or the format overrides:
+	// they are null until the configuration sets them. A typed null, or the state cannot be
+	// written at all ("Value Conversion Error", found importing on a real stack).
+	m.Headers = types.MapNull(types.StringType)
+	m.FormatConfig = types.StringNull()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }

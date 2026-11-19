@@ -66,6 +66,17 @@ type fakeAPI struct {
 	bindings map[string]map[string]bool // agent → policy id set
 	calls    []string
 	mcp      map[string]*fakeMCPServer
+	agents   []fakeAgent
+}
+
+type fakeAgent struct {
+	AgentID     string            `json:"agent_id"`
+	DisplayName string            `json:"display_name"`
+	Framework   string            `json:"framework"`
+	Status      string            `json:"status"`
+	Labels      map[string]string `json:"labels"`
+	TrustTier   string            `json:"trust_tier,omitempty"`
+	Tools       []string          `json:"tool_manifest"`
 }
 
 func newFakeAPI(token string) *fakeAPI {
@@ -377,6 +388,37 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(f.bindings[parts[1]], parts[3])
 		w.WriteHeader(204)
+	case p == "/agents" && r.Method == http.MethodGet:
+		// Like the api: q is a contains-match on the name, status an exact filter, paged.
+		q, status := strings.ToLower(r.URL.Query().Get("q")), r.URL.Query().Get("status")
+		var limit, offset int
+		fmt.Sscan(r.URL.Query().Get("limit"), &limit)
+		fmt.Sscan(r.URL.Query().Get("offset"), &offset)
+		if limit <= 0 || limit > 100 {
+			limit = 50 // the api's clamp: out of range means the default, not the maximum
+		}
+		match := []fakeAgent{}
+		for _, a := range f.agents {
+			if (q == "" || strings.Contains(strings.ToLower(a.DisplayName), q)) && (status == "" || a.Status == status) {
+				match = append(match, a)
+			}
+		}
+		if offset > len(match) {
+			offset = len(match)
+		}
+		end := offset + limit
+		if end > len(match) {
+			end = len(match)
+		}
+		jsonOut(w, 200, map[string]any{"agents": match[offset:end], "count": end - offset})
+	case len(parts) == 2 && parts[0] == "agents" && r.Method == http.MethodGet:
+		for _, a := range f.agents {
+			if a.AgentID == parts[1] {
+				jsonOut(w, 200, a)
+				return
+			}
+		}
+		jsonOut(w, 404, map[string]any{"error": "agent not found"})
 	default:
 		if f.serveMCP(w, r, parts) {
 			return

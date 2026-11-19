@@ -52,6 +52,15 @@ resource "ponte_policy_binding" "claims_bot_budget" {
 | `ponte_mcp_server` | `res_…` | a registered MCP server: name, endpoint_url, data_classification, environment, owner, require_tool_review. Policies can refuse unregistered servers. A changed `endpoint_url` replaces the resource (pinned tools belong to the endpoint); everything else is edited in place and keeps the pins. Destroy deregisters the server and deletes its pins, proxy configuration and sync credential. Import by id. |
 | `ponte_mcp_tool_risk_tier` | `server_id/tool` | the declared risk tier of one tool: `read`, `write`, `external_send`, `destructive` or `code_exec`. Policies read the declared tier. The tool must be pinned first (sync the server), otherwise apply fails with "tool not pinned". Destroy leaves the declaration in Ponte (there is no clear) and warns. |
 
+## Data sources
+
+| Data source | Finds | Notes |
+|---|---|---|
+| `ponte_agent` | one agent, by `agent_id` or by `name` | The name is matched exactly (case-insensitive). No match, or more than one, is an error that lists the candidates. Gives `id`, `status`, `framework`, `trust_tier`, `labels`, `tools`. |
+| `ponte_agents` | the agents carrying every given label | `status` defaults to `active` (`"any"` for all). Gives `ids` (sorted) and `names`, for `for_each` over memberships or bindings. |
+
+Agents are registered and onboarded in Ponte, not in Terraform: they carry credentials, owners and attestations that do not belong in state.
+
 Webhooks, budgets and MCP servers live on the api (`…/api`) rather than the control plane (`…/api/control`); the provider derives the api base from `endpoint`, or takes `api_endpoint` / `PONTE_API_BASE_URL`. The same operator token authorizes both.
 
 ## Authentication
@@ -74,8 +83,17 @@ provider_installation {
 }
 ```
 
-Publishing to the Terraform Registry needs a release workflow (goreleaser, GPG-signed) and is not set up yet.
+## Releasing
+
+The Terraform Registry reads a public GitHub repository named `terraform-provider-ponte` with releases at its root, so this directory is laid out to be that repository: `.goreleaser.yml`, `terraform-registry-manifest.json` and `.github/workflows/release.yml` are here, and do nothing while the provider lives inside the monorepo.
+
+1. Mirror this directory to the public repository (`git subtree split --prefix terraform-provider-ponte`).
+2. Register a GPG public key with the Registry namespace; add `GPG_PRIVATE_KEY` and `PASSPHRASE` as repository secrets.
+3. Generate the documentation pages from the schema and `examples/` (`tfplugindocs generate --provider-name ponte`) and commit `docs/`.
+4. Push a tag `vX.Y.Z`: the workflow runs the acceptance tests, then builds, signs and publishes.
+
+Tested against a live stack (app.ponte.ai, 2026-11-18): create, update in place, re-plan with no changes and destroy for every resource except `ponte_mcp_tool_risk_tier`; import for groups, MCP servers and budgets.
 
 ## Not yet covered
 
-MCP proxy configuration and sync credentials, tool approvals (an approval is a human review of one definition, so it stays in the console), SCIM targets, recert policies, data sources for agents. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.
+MCP proxy configuration and sync credentials, tool approvals (an approval is a human review of one definition, so it stays in the console), SCIM targets, recert policies, target audit log integrations. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.

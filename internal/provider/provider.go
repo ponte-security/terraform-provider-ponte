@@ -105,7 +105,7 @@ func (p *ponteProvider) Resources(_ context.Context) []func() resource.Resource 
 }
 
 func (p *ponteProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{newAgentDataSource, newAgentsDataSource}
 }
 
 // clientFrom pulls the configured client out of a resource configure request.

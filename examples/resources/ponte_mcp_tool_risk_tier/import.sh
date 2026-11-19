@@ -1,0 +1,1 @@
+terraform import ponte_mcp_tool_risk_tier.crm_delete_account res_0123456789ab/delete_account
