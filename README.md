@@ -5,7 +5,7 @@ Ponte authorization resources as code: policies, agent groups, memberships, poli
 ```hcl
 terraform {
   required_providers {
-    ponte = { source = "ponte-ai/ponte" }
+    ponte = { source = "ponte-security/ponte" }
   }
 }
 
@@ -78,7 +78,7 @@ To use the local build in a configuration, add to `~/.terraformrc`:
 
 ```hcl
 provider_installation {
-  dev_overrides { "ponte-ai/ponte" = "/path/to/terraform-provider-ponte" }
+  dev_overrides { "ponte-security/ponte" = "/path/to/terraform-provider-ponte" }
   direct {}
 }
 ```

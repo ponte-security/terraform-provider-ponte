@@ -1,6 +1,6 @@
 terraform {
   required_providers {
-    ponte = { source = "ponte-ai/ponte" }
+    ponte = { source = "ponte-security/ponte" }
   }
 }
 

@@ -1,4 +1,4 @@
-module github.com/ponte-ai/terraform-provider-ponte
+module github.com/ponte-security/terraform-provider-ponte
 
 go 1.25.8
 

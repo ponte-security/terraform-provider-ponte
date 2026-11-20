@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ponte-ai/terraform-provider-ponte/internal/client"
+	"github.com/ponte-security/terraform-provider-ponte/internal/client"
 )
 
 // ponte_policy: one policy by NAME. Ponte keeps a version history per name: saving new PPL

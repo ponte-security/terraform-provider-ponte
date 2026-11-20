@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/ponte-ai/terraform-provider-ponte/internal/client"
+	"github.com/ponte-security/terraform-provider-ponte/internal/client"
 )
 
 // New returns the provider factory.

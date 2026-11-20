@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/ponte-ai/terraform-provider-ponte/internal/client"
+	"github.com/ponte-security/terraform-provider-ponte/internal/client"
 )
 
 // Data sources for agents. Agents are registered and onboarded in Ponte (they carry

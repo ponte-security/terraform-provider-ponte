@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/ponte-ai/terraform-provider-ponte/internal/client"
+	"github.com/ponte-security/terraform-provider-ponte/internal/client"
 )
 
 // ponte_spend_budget: a monthly model-spend budget on a scope (org, team, owner, agent, model).
