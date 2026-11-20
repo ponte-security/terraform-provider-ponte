@@ -24,7 +24,7 @@ resource "ponte_agent_group" "claims" {
 
 resource "ponte_agent_group_member" "claims_bot" {
   group_id = ponte_agent_group.claims.id
-  agent_id = "agt_f524a3efaeff"
+  agent_id = "agt_0123456789ab"
 }
 
 resource "ponte_policy" "budget_guard" {
@@ -33,7 +33,7 @@ resource "ponte_policy" "budget_guard" {
 }
 
 resource "ponte_policy_binding" "claims_bot_budget" {
-  agent_id  = "agt_f524a3efaeff"
+  agent_id  = "agt_0123456789ab"
   policy_id = ponte_policy.budget_guard.policy_id
 }
 ```

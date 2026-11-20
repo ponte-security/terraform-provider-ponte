@@ -3,5 +3,5 @@ data "ponte_agent" "claims_bot" {
 }
 
 data "ponte_agent" "by_id" {
-  agent_id = "agt_f524a3efaeff"
+  agent_id = "agt_0123456789ab"
 }
