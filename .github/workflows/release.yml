@@ -1,9 +1,9 @@
-# Publishes a provider release when a version tag is pushed.
+# Publishes a provider release when a version tag is pushed: runs the tests, then builds, signs
+# and publishes. Secrets: GPG_PRIVATE_KEY and PASSPHRASE for the key registered with the
+# Registry namespace.
 #
-# The Terraform Registry only reads a public repository named terraform-provider-ponte whose
-# releases sit at its root. This directory is laid out to be that repository: mirror it there
-# (git subtree split), push a tag v1.2.3, and this workflow builds, signs and publishes.
-# Secrets: GPG_PRIVATE_KEY and PASSPHRASE for the key registered with the Registry namespace.
+# Actions are pinned to a commit, not a tag: the release job holds the signing key, and a tag
+# can be moved to different code.
 name: release
 on:
   push:
@@ -14,11 +14,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_wrapper: false
       - run: go vet ./...
@@ -29,18 +29,18 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: crazy-max/ghaction-import-gpg@v6
+      - uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         id: gpg
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.PASSPHRASE }}
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           args: release --clean
         env:

@@ -85,14 +85,18 @@ provider_installation {
 
 ## Releasing
 
-The Terraform Registry reads a public GitHub repository named `terraform-provider-ponte` with releases at its root, so this directory is laid out to be that repository: `.goreleaser.yml`, `terraform-registry-manifest.json` and `.github/workflows/release.yml` are here, and do nothing while the provider lives inside the monorepo.
+Published on the Terraform Registry as [`ponte-security/ponte`](https://registry.terraform.io/providers/ponte-security/ponte/latest). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
-1. Mirror this directory to the public repository (`git subtree split --prefix terraform-provider-ponte`).
-2. Register a GPG public key with the Registry namespace; add `GPG_PRIVATE_KEY` and `PASSPHRASE` as repository secrets.
-3. Generate the documentation pages from the schema and `examples/` (`tfplugindocs generate --provider-name ponte`) and commit `docs/`.
-4. Push a tag `vX.Y.Z`: the workflow runs the acceptance tests, then builds, signs and publishes.
+1. Add the version to `CHANGELOG.md`.
+2. If a schema or an example changed, regenerate the documentation pages (`tfplugindocs generate --provider-name ponte`) and commit `docs/`.
+3. Push to `main`; the `test` workflow must pass.
+4. Push a tag `vX.Y.Z`. The `release` workflow runs the tests again, then builds, signs and publishes. It needs the repository secrets `GPG_PRIVATE_KEY` and `PASSPHRASE` for the key registered with the Registry namespace.
 
 Tested against a live stack (app.ponte.ai, 2026-11-18): create, update in place, re-plan with no changes and destroy for every resource except `ponte_mcp_tool_risk_tier`; import for groups, MCP servers and budgets.
+
+## Licence
+
+[MPL-2.0](LICENSE).
 
 ## Not yet covered
 

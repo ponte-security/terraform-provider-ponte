@@ -24,6 +24,66 @@ type fakePolicy struct {
 	Status          string `json:"status"`
 	EnforcementMode string `json:"enforcement_mode"`
 	PPL             string `json:"-"`
+	// PPLSource is the policy as parsed, the way the control plane answers: JSON, with the
+	// members it always writes even when empty.
+	PPLSource json.RawMessage `json:"ppl_source"`
+}
+
+// parsedPolicy is the fake's copy of a policy as the control plane stores it.
+func parsedPolicy(src string) json.RawMessage {
+	var doc map[string]any
+	if yaml.Unmarshal([]byte(src), &doc) != nil {
+		return nil
+	}
+	if meta, ok := doc["metadata"].(map[string]any); ok && meta["labels"] == nil {
+		meta["labels"] = map[string]any{} // an empty member the YAML did not have
+	}
+	out, _ := json.Marshal(doc)
+	return out
+}
+
+// savePolicy stores a version the way POST /policies does. Caller holds f.mu.
+func (f *fakeAPI) savePolicy(src, mode string) (*fakePolicy, bool) {
+	var doc struct {
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+		Spec struct {
+			Description string `yaml:"description"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil || doc.Metadata.Name == "" {
+		return nil, false
+	}
+	version := 1
+	if old := f.activeByName(doc.Metadata.Name); old != nil {
+		version = old.Version + 1
+		old.Status = "archived"
+		// Bindings follow the name.
+		np := f.id("pol")
+		for _, set := range f.bindings {
+			if set[old.PolicyID] {
+				delete(set, old.PolicyID)
+				set[np] = true
+			}
+		}
+		f.n--
+	}
+	if mode != "observe" {
+		mode = "enforce"
+	}
+	np := &fakePolicy{PolicyID: f.id("pol"), Name: doc.Metadata.Name, Version: version, Description: strings.TrimSpace(doc.Spec.Description),
+		Status: "active", EnforcementMode: mode, PPL: src, PPLSource: parsedPolicy(src)}
+	f.policies[np.PolicyID] = np
+	f.createdModes = append(f.createdModes, mode)
+	return np, true
+}
+
+// consoleEdit saves a version outside Terraform, as an operator would in the console.
+func (f *fakeAPI) consoleEdit(src string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.savePolicy(src, "enforce")
 }
 
 type fakeGroup struct {
@@ -45,6 +105,8 @@ type fakeWebhook struct {
 	Enabled     *bool    `json:"enabled"`
 	Format      string   `json:"format"`
 	MinSeverity string   `json:"min_severity"`
+	// A pointer: PATCH changes it only when the member is sent, as the api does.
+	FormatConfig *json.RawMessage `json:"format_config"`
 }
 
 type fakeBudget struct {
@@ -55,6 +117,13 @@ type fakeBudget struct {
 }
 
 type fakeAPI struct {
+	// ignoreModeOnCreate makes POST /policies behave like a control plane that predates
+	// enforcement_mode on create. createdModes is the mode each version was stored in;
+	// modePatches counts PATCH …/mode calls.
+	ignoreModeOnCreate bool
+	createdModes       []string
+	modePatches        int
+
 	mu       sync.Mutex
 	webhooks map[string]*fakeWebhook
 	budgets  map[string]*fakeBudget
@@ -146,7 +215,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/webhooks" && r.Method == http.MethodGet:
 		list := []map[string]any{}
 		for _, x := range f.webhooks {
-			list = append(list, map[string]any{"id": x.ID, "name": x.Name, "url": x.URL, "event_types": x.EventTypes, "headers": map[string]string{}, // redacted
+			// Sorted, not as sent: the order of event types carries no meaning.
+			events := append([]string{}, x.EventTypes...)
+			sort.Strings(events)
+			list = append(list, map[string]any{"id": x.ID, "name": x.Name, "url": x.URL, "event_types": events, "headers": map[string]string{}, // redacted
 				"enabled": *x.Enabled, "description": x.Description, "format": x.Format, "min_severity": x.MinSeverity})
 		}
 		sort.Slice(list, func(i, j int) bool { return list[i]["id"].(string) < list[j]["id"].(string) })
@@ -178,6 +250,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if in.MinSeverity != "" {
 			x.MinSeverity = in.MinSeverity
 		}
+		if in.FormatConfig != nil {
+			x.FormatConfig = in.FormatConfig
+		}
 		jsonOut(w, 200, map[string]any{"updated": true})
 	case len(parts) == 2 && parts[0] == "webhooks" && r.Method == http.MethodDelete:
 		if f.webhooks[parts[1]] == nil {
@@ -208,37 +283,18 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, map[string]any{"budgets": list})
 	case p == "/policies" && r.Method == http.MethodPost:
 		var body struct {
-			PPL string `json:"ppl_source"`
+			PPL  string `json:"ppl_source"`
+			Mode string `json:"enforcement_mode"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		var doc struct {
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-			Spec struct {
-				Description string `yaml:"description"`
-			} `yaml:"spec"`
+		if f.ignoreModeOnCreate {
+			body.Mode = "" // a control plane that predates the field
 		}
-		if err := yaml.Unmarshal([]byte(body.PPL), &doc); err != nil || doc.Metadata.Name == "" {
+		np, ok := f.savePolicy(body.PPL, body.Mode)
+		if !ok {
 			jsonOut(w, 400, map[string]any{"error": "invalid policy"})
 			return
 		}
-		version := 1
-		if old := f.activeByName(doc.Metadata.Name); old != nil {
-			version = old.Version + 1
-			old.Status = "archived"
-			// Bindings follow the name.
-			np := f.id("pol")
-			for _, set := range f.bindings {
-				if set[old.PolicyID] {
-					delete(set, old.PolicyID)
-					set[np] = true
-				}
-			}
-			f.n--
-		}
-		np := &fakePolicy{PolicyID: f.id("pol"), Name: doc.Metadata.Name, Version: version, Description: strings.TrimSpace(doc.Spec.Description), Status: "active", EnforcementMode: "enforce", PPL: body.PPL}
-		f.policies[np.PolicyID] = np
 		jsonOut(w, 201, np)
 	case p == "/policies" && r.Method == http.MethodGet:
 		var list []*fakePolicy
@@ -280,6 +336,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		x.EnforcementMode = body.Mode
+		f.modePatches++
 		jsonOut(w, 200, x)
 	case p == "/registry/groups" && r.Method == http.MethodPost:
 		var g fakeGroup

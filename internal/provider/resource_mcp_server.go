@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/ponte-security/terraform-provider-ponte/internal/client"
@@ -50,7 +51,7 @@ func (r *mcpServerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"name": schema.StringAttribute{Required: true, Description: "3 to 64 characters."},
 			"endpoint_url": schema.StringAttribute{Required: true, Description: "https URL (http only for localhost). One registration per endpoint. Changing it replaces the resource: pinned tools belong to the endpoint.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"data_classification": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("internal"), Description: "public, internal, confidential, restricted or pii."},
+			"data_classification": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("internal"), Validators: []validator.String{oneOf("public", "internal", "confidential", "restricted", "pii")}, Description: "public, internal, confidential, restricted or pii."},
 			"environment":         schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("development")},
 			"owner":               schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
 			"require_tool_review": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), Description: "true: a newly seen tool is denied until an operator approves it. false: a new tool is trusted on first use."},

@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/ponte-security/terraform-provider-ponte/internal/client"
@@ -27,7 +28,7 @@ type webhookModel struct {
 	ID            types.String `tfsdk:"id"`
 	Name          types.String `tfsdk:"name"`
 	URL           types.String `tfsdk:"url"`
-	EventTypes    types.List   `tfsdk:"event_types"`
+	EventTypes    types.Set    `tfsdk:"event_types"`
 	Headers       types.Map    `tfsdk:"headers"`
 	Description   types.String `tfsdk:"description"`
 	Enabled       types.Bool   `tfsdk:"enabled"`
@@ -50,13 +51,13 @@ func (r *webhookResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"id":            schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"name":          schema.StringAttribute{Required: true},
 			"url":           schema.StringAttribute{Required: true, Description: "https URL; private targets are refused in production."},
-			"event_types":   schema.ListAttribute{ElementType: types.StringType, Required: true, Description: "Event types, or [\"*\"] for all. GET /api/v1/webhooks/event-types lists them."},
+			"event_types":   schema.SetAttribute{ElementType: types.StringType, Required: true, Description: "Event types, or [\"*\"] for all. GET /api/v1/webhooks/event-types lists them. Order does not matter."},
 			"headers":       schema.MapAttribute{ElementType: types.StringType, Optional: true, Sensitive: true, Description: "Headers sent on every delivery (an Authorization header, for example). Not read back from the api."},
 			"description":   schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
 			"enabled":       schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(true)},
-			"format":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("ponte"), Description: "ponte or udm."},
-			"min_severity":  schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("high"), Description: "Lowest level of security finding (governance.alert) delivered: critical, high or medium. Other event types are not filtered. Low findings are never sent."},
-			"format_config": schema.StringAttribute{Optional: true, Description: "JSON overrides for the udm mapping (event_type_map, product_name, vendor_name, default_event_type)."},
+			"format":        schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("ponte"), Validators: []validator.String{oneOf("ponte", "udm")}, Description: "ponte or udm."},
+			"min_severity":  schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("high"), Validators: []validator.String{oneOf("critical", "high", "medium")}, Description: "Lowest level of security finding (governance.alert) delivered: critical, high or medium. Other event types are not filtered. Low findings are never sent."},
+			"format_config": schema.StringAttribute{Optional: true, Description: "JSON overrides for the udm mapping (event_type_map, product_name, vendor_name, default_event_type). Removing it clears the overrides."},
 			"signing_secret": schema.StringAttribute{Computed: true, Sensitive: true, Description: "The HMAC secret Ponte signs deliveries with (X-Ponte-Signature). Returned once on create.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 		},
@@ -98,11 +99,11 @@ func (m *webhookModel) fill(ctx context.Context, w *client.Webhook) {
 		sev = "high" // an api that predates the field delivers critical and high
 	}
 	m.MinSeverity = types.StringValue(sev)
-	ev, _ := types.ListValueFrom(ctx, types.StringType, w.EventTypes)
-	if len(w.EventTypes) == 0 {
-		ev, _ = types.ListValueFrom(ctx, types.StringType, []string{})
+	events := w.EventTypes
+	if events == nil {
+		events = []string{}
 	}
-	m.EventTypes = ev
+	m.EventTypes, _ = types.SetValueFrom(ctx, types.StringType, events)
 }
 
 func (r *webhookResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

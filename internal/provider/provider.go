@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -64,6 +65,13 @@ func (p *ponteProvider) Configure(ctx context.Context, req provider.ConfigureReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// A value that is only known after another resource is applied cannot configure the
+	// provider now, and falling back to the environment would quietly use a different stack.
+	if cfg.Endpoint.IsUnknown() || cfg.APIEndpoint.IsUnknown() || cfg.Token.IsUnknown() {
+		resp.Diagnostics.AddError("Provider configuration is not known yet",
+			"endpoint, api_endpoint and token must be known when Terraform plans. Use a variable or the environment, not another resource's output.")
+		return
+	}
 	endpoint := strings.TrimSpace(cfg.Endpoint.ValueString())
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(os.Getenv("PONTE_API_URL"))
@@ -80,6 +88,18 @@ func (p *ponteProvider) Configure(ctx context.Context, req provider.ConfigureReq
 	}
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	// Operator tokens last minutes. Saying so here beats a 401 from the first resource.
+	if at, ok := client.TokenExpiry(token); ok {
+		switch left := time.Until(at); {
+		case left <= 0:
+			resp.Diagnostics.AddError("The operator token has expired",
+				"It expired at "+at.UTC().Format(time.RFC3339)+". Get a new one and set PONTE_OPERATOR_TOKEN (or provider \"token\").")
+			return
+		case left < time.Minute:
+			resp.Diagnostics.AddWarning("The operator token is about to expire",
+				"It expires at "+at.UTC().Format(time.RFC3339)+". A run that takes longer will fail part way with a 401.")
+		}
 	}
 	c := client.New(endpoint, token, "terraform-provider-ponte/"+p.version)
 	if api := strings.TrimSpace(cfg.APIEndpoint.ValueString()); api != "" {

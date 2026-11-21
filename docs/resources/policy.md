@@ -24,7 +24,7 @@ resource "ponte_policy" "refund_guard" {
 
 ### Required
 
-- `ppl` (String) The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). Changing it saves a new version.
+- `ppl` (String) The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). A change to what it says saves a new version; a change only to comments, spacing or key order does not.
 
 ### Optional
 

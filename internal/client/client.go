@@ -6,6 +6,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,12 +24,47 @@ type Client struct {
 	UserAgent   string
 	HTTP        *http.Client
 	apiEndpoint string
+	// retryWait is the first pause between attempts; it doubles each time. Tests shorten it.
+	retryWait time.Duration
 }
 
 // New builds a client. endpoint is the control plane base, e.g. https://app.ponte.ai/api/control.
 func New(endpoint, token, userAgent string) *Client {
 	return &Client{Endpoint: strings.TrimRight(strings.TrimSpace(endpoint), "/"), Token: strings.TrimSpace(token), UserAgent: userAgent,
-		HTTP: &http.Client{Timeout: 60 * time.Second}}
+		HTTP: &http.Client{Timeout: 60 * time.Second}, retryWait: 500 * time.Millisecond}
+}
+
+// seg makes one id safe as a single path segment. Ids reach here from configuration and from
+// `terraform import`, so a slash or a dot-dot in one must not select a different endpoint.
+func seg(id string) string {
+	switch id {
+	case ".":
+		return "%2E"
+	case "..":
+		return "%2E%2E"
+	}
+	return url.PathEscape(id)
+}
+
+// TokenExpiry reads the expiry out of the operator token without verifying it (the control
+// plane verifies; this is only to say "expired" instead of a bare 401). ok is false when the
+// token is not a JWT or carries no expiry.
+func TokenExpiry(token string) (at time.Time, ok bool) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp float64 `json:"exp"`
+	}
+	if json.Unmarshal(raw, &claims) != nil || claims.Exp <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(claims.Exp), 0), true
 }
 
 // Error is a non-2xx answer.
@@ -37,6 +73,8 @@ type Error struct {
 	Method string
 	Path   string
 	Body   string
+	// Hint says what to do about it, when the client can tell (an expired token).
+	Hint string
 }
 
 func (e *Error) Error() string {
@@ -52,7 +90,11 @@ func (e *Error) Error() string {
 			msg = parsed.Message
 		}
 	}
-	return fmt.Sprintf("%s %s: %d %s", e.Method, e.Path, e.Status, strings.TrimSpace(msg))
+	out := fmt.Sprintf("%s %s: %d %s", e.Method, e.Path, e.Status, strings.TrimSpace(msg))
+	if e.Hint != "" {
+		out += "\n\n" + e.Hint
+	}
+	return out
 }
 
 // IsNotFound reports whether err is a 404.
@@ -66,42 +108,96 @@ func (c *Client) Do(ctx context.Context, method, path string, in, out any) error
 	return c.do(ctx, c.Endpoint, method, path, in, out)
 }
 
+// maxAttempts is how many times one request is tried.
+const maxAttempts = 4
+
+// retryable says whether a failed attempt may be repeated. A GET, PUT or DELETE here is safe to
+// send twice, so it is retried on a dropped connection and on a gateway's 502/503/504. A POST
+// may have been carried out even though its answer was lost (a second one would register a
+// second webhook), so it is repeated only when the server says it did nothing: 429.
+func retryable(method string, status int, transport bool) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	if method == http.MethodPost || method == http.MethodPatch {
+		return false
+	}
+	return transport || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
 func (c *Client) do(ctx context.Context, base, method, path string, in, out any) error {
-	var body io.Reader
+	var payload []byte
 	if in != nil {
 		raw, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		body = bytes.NewReader(raw)
+		payload = raw
+	}
+	wait := c.retryWait
+	for attempt := 1; ; attempt++ {
+		status, raw, err := c.send(ctx, base, method, path, payload, in != nil)
+		if err == nil && status >= 200 && status <= 299 {
+			if out != nil && len(bytes.TrimSpace(raw)) > 0 {
+				if err := json.Unmarshal(raw, out); err != nil {
+					return fmt.Errorf("%s %s: answer is not JSON: %w", method, path, err)
+				}
+			}
+			return nil
+		}
+		if attempt < maxAttempts && ctx.Err() == nil && retryable(method, status, err != nil) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+				wait *= 2
+				continue
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", method, path, err)
+		}
+		e := &Error{Status: status, Method: method, Path: path, Body: string(raw)}
+		if status == http.StatusUnauthorized {
+			e.Hint = c.unauthorizedHint()
+		}
+		return e
+	}
+}
+
+// unauthorizedHint explains a 401. The usual cause is the operator token running out during a
+// long apply: they last minutes.
+func (c *Client) unauthorizedHint() string {
+	if at, ok := TokenExpiry(c.Token); ok && time.Now().After(at) {
+		return "The operator token expired at " + at.UTC().Format(time.RFC3339) + ". Get a new one and run again; what was already applied is in the state."
+	}
+	return "Check that PONTE_OPERATOR_TOKEN is a signed-in operator's access token for this endpoint. An agent's token is refused."
+}
+
+// send makes one attempt and returns the status and the body.
+func (c *Client) send(ctx context.Context, base, method, path string, payload []byte, hasBody bool) (int, []byte, error) {
+	var body io.Reader
+	if hasBody {
+		body = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Accept", "application/json")
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
 	}
-	if in != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &Error{Status: resp.StatusCode, Method: method, Path: path, Body: string(raw)}
-	}
-	if out != nil && len(bytes.TrimSpace(raw)) > 0 {
-		if err := json.Unmarshal(raw, out); err != nil {
-			return fmt.Errorf("%s %s: answer is not JSON: %w", method, path, err)
-		}
-	}
-	return nil
+	return resp.StatusCode, raw, nil
 }
 
 // ── Policies ──
@@ -115,13 +211,21 @@ type Policy struct {
 	Status          string `json:"status"`
 	EnforcementMode string `json:"enforcement_mode"`
 	ReasoningMode   string `json:"reasoning_mode"`
+	// PPLSource is the policy as the control plane parsed it (JSON, not the YAML that was sent).
+	PPLSource json.RawMessage `json:"ppl_source"`
 }
 
 // CreatePolicy saves a policy version from PPL YAML. A name that exists gets a new version
-// with a NEW policy id; the previous version is archived and bindings follow the name.
-func (c *Client) CreatePolicy(ctx context.Context, ppl string) (*Policy, error) {
+// with a NEW policy id; the previous version is archived and bindings follow the name. mode
+// (enforce | observe) is stored with the version, so an observe policy never enforces first. A
+// control plane that predates the field ignores it and answers with enforce; the caller checks.
+func (c *Client) CreatePolicy(ctx context.Context, ppl, mode string) (*Policy, error) {
 	var p Policy
-	if err := c.Do(ctx, http.MethodPost, "/v1/policies", map[string]any{"ppl_source": ppl}, &p); err != nil {
+	body := map[string]any{"ppl_source": ppl}
+	if mode != "" {
+		body["enforcement_mode"] = mode
+	}
+	if err := c.Do(ctx, http.MethodPost, "/v1/policies", body, &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -130,7 +234,7 @@ func (c *Client) CreatePolicy(ctx context.Context, ppl string) (*Policy, error) 
 // GetPolicy reads one version by id.
 func (c *Client) GetPolicy(ctx context.Context, id string) (*Policy, error) {
 	var p Policy
-	if err := c.Do(ctx, http.MethodGet, "/v1/policies/"+id, nil, &p); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/policies/"+seg(id), nil, &p); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -159,12 +263,12 @@ func (c *Client) ActivePolicyByName(ctx context.Context, name string) (*Policy, 
 
 // SetPolicyMode sets enforce | observe.
 func (c *Client) SetPolicyMode(ctx context.Context, id, mode string) error {
-	return c.Do(ctx, http.MethodPatch, "/v1/policies/"+id+"/mode", map[string]any{"mode": mode}, nil)
+	return c.Do(ctx, http.MethodPatch, "/v1/policies/"+seg(id)+"/mode", map[string]any{"mode": mode}, nil)
 }
 
 // DeletePolicy archives a version.
 func (c *Client) DeletePolicy(ctx context.Context, id string) error {
-	return c.Do(ctx, http.MethodDelete, "/v1/policies/"+id, nil, nil)
+	return c.Do(ctx, http.MethodDelete, "/v1/policies/"+seg(id), nil, nil)
 }
 
 // ── Agent groups ──
@@ -200,7 +304,7 @@ func (c *Client) CreateGroup(ctx context.Context, in GroupInput) (*Group, error)
 
 func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 	var g Group
-	if err := c.Do(ctx, http.MethodGet, "/v1/registry/groups/"+id, nil, &g); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/registry/groups/"+seg(id), nil, &g); err != nil {
 		return nil, err
 	}
 	return &g, nil
@@ -208,14 +312,14 @@ func (c *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 
 func (c *Client) UpdateGroup(ctx context.Context, id string, in GroupInput) (*Group, error) {
 	var g Group
-	if err := c.Do(ctx, http.MethodPut, "/v1/registry/groups/"+id, in, &g); err != nil {
+	if err := c.Do(ctx, http.MethodPut, "/v1/registry/groups/"+seg(id), in, &g); err != nil {
 		return nil, err
 	}
 	return &g, nil
 }
 
 func (c *Client) DeleteGroup(ctx context.Context, id string) error {
-	return c.Do(ctx, http.MethodDelete, "/v1/registry/groups/"+id, nil, nil)
+	return c.Do(ctx, http.MethodDelete, "/v1/registry/groups/"+seg(id), nil, nil)
 }
 
 // GroupMembers lists the agent ids in a group.
@@ -223,18 +327,18 @@ func (c *Client) GroupMembers(ctx context.Context, id string) ([]string, error) 
 	var out struct {
 		AgentIDs []string `json:"agent_ids"`
 	}
-	if err := c.Do(ctx, http.MethodGet, "/v1/registry/groups/"+id+"/members", nil, &out); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/registry/groups/"+seg(id)+"/members", nil, &out); err != nil {
 		return nil, err
 	}
 	return out.AgentIDs, nil
 }
 
 func (c *Client) AddGroupMember(ctx context.Context, groupID, agentID string) error {
-	return c.Do(ctx, http.MethodPost, "/v1/registry/groups/"+groupID+"/members", map[string]any{"agent_id": agentID}, nil)
+	return c.Do(ctx, http.MethodPost, "/v1/registry/groups/"+seg(groupID)+"/members", map[string]any{"agent_id": agentID}, nil)
 }
 
 func (c *Client) RemoveGroupMember(ctx context.Context, groupID, agentID string) error {
-	return c.Do(ctx, http.MethodDelete, "/v1/registry/groups/"+groupID+"/members/"+agentID, nil, nil)
+	return c.Do(ctx, http.MethodDelete, "/v1/registry/groups/"+seg(groupID)+"/members/"+seg(agentID), nil, nil)
 }
 
 // ── Policy bindings ──
@@ -244,18 +348,18 @@ func (c *Client) AgentPolicyBindings(ctx context.Context, agentID string) ([]str
 	var out struct {
 		PolicyIDs []string `json:"policy_ids"`
 	}
-	if err := c.Do(ctx, http.MethodGet, "/v1/agents/"+agentID+"/policy-bindings", nil, &out); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/agents/"+seg(agentID)+"/policy-bindings", nil, &out); err != nil {
 		return nil, err
 	}
 	return out.PolicyIDs, nil
 }
 
 func (c *Client) BindPolicy(ctx context.Context, agentID, policyID string) error {
-	return c.Do(ctx, http.MethodPost, "/v1/agents/"+agentID+"/policy-bindings", map[string]any{"policy_id": policyID}, nil)
+	return c.Do(ctx, http.MethodPost, "/v1/agents/"+seg(agentID)+"/policy-bindings", map[string]any{"policy_id": policyID}, nil)
 }
 
 func (c *Client) UnbindPolicy(ctx context.Context, agentID, policyID string) error {
-	return c.Do(ctx, http.MethodDelete, "/v1/agents/"+agentID+"/policy-bindings/"+policyID, nil, nil)
+	return c.Do(ctx, http.MethodDelete, "/v1/agents/"+seg(agentID)+"/policy-bindings/"+seg(policyID), nil, nil)
 }
 
 // ── The api side (…/api/v1): webhooks and budgets live on the api, not the control plane ──
@@ -348,17 +452,19 @@ func (c *Client) UpdateWebhook(ctx context.Context, id string, in WebhookInput) 
 	if in.Format != "" {
 		body["format"] = in.Format
 	}
+	// Always sent: an empty object clears overrides that were removed from the configuration.
+	body["format_config"] = json.RawMessage("{}")
 	if len(in.FormatConfig) > 0 {
 		body["format_config"] = in.FormatConfig
 	}
 	if in.MinSeverity != "" {
 		body["min_severity"] = in.MinSeverity
 	}
-	return c.DoAPI(ctx, http.MethodPatch, "/v1/webhooks/"+id, body, nil)
+	return c.DoAPI(ctx, http.MethodPatch, "/v1/webhooks/"+seg(id), body, nil)
 }
 
 func (c *Client) DeleteWebhook(ctx context.Context, id string) error {
-	return c.DoAPI(ctx, http.MethodDelete, "/v1/webhooks/"+id, nil, nil)
+	return c.DoAPI(ctx, http.MethodDelete, "/v1/webhooks/"+seg(id), nil, nil)
 }
 
 // Budget is one spend budget on a scope.
@@ -452,7 +558,7 @@ var mcpServerOwnedMetadata = []string{"mcp_proxy_identity", "sync", "require_too
 // fields changed: pinned tools, the proxy identity and the sync state are untouched.
 func (c *Client) UpdateMCPServer(ctx context.Context, id string, in MCPServerInput) error {
 	var cur map[string]any
-	if err := c.Do(ctx, http.MethodGet, "/v1/registry/resources/"+id, nil, &cur); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/registry/resources/"+seg(id), nil, &cur); err != nil {
 		return err
 	}
 	if cur == nil {
@@ -477,17 +583,17 @@ func (c *Client) UpdateMCPServer(ctx context.Context, id string, in MCPServerInp
 			cur[k] = []any{}
 		}
 	}
-	return c.Do(ctx, http.MethodPut, "/v1/registry/resources/"+id, cur, nil)
+	return c.Do(ctx, http.MethodPut, "/v1/registry/resources/"+seg(id), cur, nil)
 }
 
 // SetMCPServerReviewMode sets whether a newly seen tool waits for approval before use.
 func (c *Client) SetMCPServerReviewMode(ctx context.Context, id string, require bool) error {
-	return c.DoAPI(ctx, http.MethodPut, "/v1/mcp-servers/"+id+"/review-mode", map[string]any{"require_review": require}, nil)
+	return c.DoAPI(ctx, http.MethodPut, "/v1/mcp-servers/"+seg(id)+"/review-mode", map[string]any{"require_review": require}, nil)
 }
 
 // DeleteMCPServer deregisters a server with its pinned tools, proxy config and sync credential.
 func (c *Client) DeleteMCPServer(ctx context.Context, id string) error {
-	return c.DoAPI(ctx, http.MethodDelete, "/v1/mcp-servers/"+id, nil, nil)
+	return c.DoAPI(ctx, http.MethodDelete, "/v1/mcp-servers/"+seg(id), nil, nil)
 }
 
 // ToolRiskTier reads a pinned tool's declared risk tier ("" when undeclared). A tool that is
@@ -499,7 +605,7 @@ func (c *Client) ToolRiskTier(ctx context.Context, serverID, tool string) (strin
 			RiskTier string `json:"risk_tier"`
 		} `json:"tools"`
 	}
-	path := "/v1/mcp-servers/" + serverID + "/tool-definitions"
+	path := "/v1/mcp-servers/" + seg(serverID) + "/tool-definitions"
 	if err := c.DoAPI(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return "", err
 	}
@@ -514,7 +620,7 @@ func (c *Client) ToolRiskTier(ctx context.Context, serverID, tool string) (strin
 // DeclareToolRiskTier declares what a pinned tool can do: read, write, external_send,
 // destructive or code_exec.
 func (c *Client) DeclareToolRiskTier(ctx context.Context, serverID, tool, tier string) error {
-	return c.DoAPI(ctx, http.MethodPost, "/v1/mcp-servers/"+serverID+"/tool-definitions/"+url.PathEscape(tool)+"/risk-tier", map[string]any{"risk_tier": tier}, nil)
+	return c.DoAPI(ctx, http.MethodPost, "/v1/mcp-servers/"+seg(serverID)+"/tool-definitions/"+seg(tool)+"/risk-tier", map[string]any{"risk_tier": tier}, nil)
 }
 
 // ── Agents (read only: agents are registered and onboarded in Ponte, not in Terraform) ──
@@ -533,7 +639,7 @@ type Agent struct {
 // GetAgent reads one agent by id.
 func (c *Client) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	var a Agent
-	if err := c.Do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &a); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/v1/agents/"+seg(id), nil, &a); err != nil {
 		return nil, err
 	}
 	return &a, nil

@@ -33,7 +33,7 @@ resource "ponte_agent_group" "claims" {
 - `description` (String)
 - `max_concurrent_agents` (Number) Cap on simultaneously active member agents.
 - `owner` (String) The owning person or team.
-- `tags` (List of String) Free-form tags.
+- `tags` (Set of String) Free-form tags. Order does not matter.
 - `trust_level` (String) The group's trust level (associate by default).
 
 ### Read-Only

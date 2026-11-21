@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"gopkg.in/yaml.v3"
 
@@ -29,7 +30,7 @@ type policyResource struct {
 type policyModel struct {
 	ID              types.String `tfsdk:"id"`
 	Name            types.String `tfsdk:"name"`
-	PPL             types.String `tfsdk:"ppl"`
+	PPL             pplValue     `tfsdk:"ppl"`
 	EnforcementMode types.String `tfsdk:"enforcement_mode"`
 	PolicyID        types.String `tfsdk:"policy_id"`
 	Version         types.Int64  `tfsdk:"version"`
@@ -48,8 +49,9 @@ func (r *policyResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 		Attributes: map[string]schema.Attribute{
 			"id":   schema.StringAttribute{Computed: true, Description: "The policy name.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"name": schema.StringAttribute{Computed: true, Description: "metadata.name from the YAML.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"ppl":  schema.StringAttribute{Required: true, Description: "The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). Changing it saves a new version."},
+			"ppl":  schema.StringAttribute{Required: true, CustomType: pplType{}, Description: "The policy as PPL YAML (apiVersion ponte.io/v1, kind AgentPolicy). A change to what it says saves a new version; a change only to comments, spacing or key order does not."},
 			"enforcement_mode": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("enforce"),
+				Validators:  []validator.String{oneOf("enforce", "observe")},
 				Description: "enforce (the verdict binds decisions) or observe (evaluated and recorded, never binding)."},
 			"policy_id":   schema.StringAttribute{Computed: true, Description: "The id of the active version. Changes on every edit."},
 			"version":     schema.Int64Attribute{Computed: true, Description: "The active version number."},
@@ -102,7 +104,24 @@ func (r *policyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 		if state.Name.ValueString() != name {
 			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("name"))
 		}
-		if state.PPL.ValueString() != plan.PPL.ValueString() {
+		// The framework marks the computed attributes unknown whenever anything differs. They
+		// only change when a version is saved, which is when the policy itself changes.
+		keepVersion := func() {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("policy_id"), state.PolicyID)...)
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("version"), state.Version)...)
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("description"), state.Description)...)
+		}
+		switch {
+		case state.Name.ValueString() != name:
+			// Replaced: everything is new.
+		case state.PPL.ValueString() == plan.PPL.ValueString():
+			keepVersion()
+		case samePolicy(state.PPL.ValueString(), plan.PPL.ValueString()):
+			// The text changed and the policy did not (a comment, spacing, key order): keep the
+			// stored text, so nothing is planned and no version is saved.
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("ppl"), state.PPL)...)
+			keepVersion()
+		default:
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("policy_id"), types.StringUnknown())...)
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("version"), types.Int64Unknown())...)
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("description"), types.StringUnknown())...)
@@ -110,23 +129,33 @@ func (r *policyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	}
 }
 
+// save stores the YAML as a new version, in the mode asked for. The mode goes with the create
+// call, so an observe policy is stored observing. A control plane that predates that answers
+// with enforce, and the mode is then set by a second call. Once the version exists the model
+// describes it, even when save returns an error: the caller keeps it in state, so a failed mode
+// change leaves a policy Terraform knows about and corrects on the next apply.
 func (r *policyResource) save(ctx context.Context, m *policyModel) error {
-	p, err := r.c.CreatePolicy(ctx, m.PPL.ValueString())
-	if err != nil {
-		return err
-	}
 	mode := m.EnforcementMode.ValueString()
 	if mode == "" {
 		mode = "enforce"
 	}
+	p, err := r.c.CreatePolicy(ctx, m.PPL.ValueString(), mode)
+	if err != nil {
+		return err
+	}
+	if p.EnforcementMode == "" {
+		p.EnforcementMode = "enforce"
+	}
+	var modeErr error
 	if p.EnforcementMode != mode {
 		if err := r.c.SetPolicyMode(ctx, p.PolicyID, mode); err != nil {
-			return fmt.Errorf("the policy was saved as %s but its mode could not be set: %w", p.PolicyID, err)
+			modeErr = fmt.Errorf("the policy was saved as %s in %s mode, and setting it to %s failed: %w", p.PolicyID, p.EnforcementMode, mode, err)
+		} else {
+			p.EnforcementMode = mode
 		}
-		p.EnforcementMode = mode
 	}
 	m.fill(p)
-	return nil
+	return modeErr
 }
 
 func (m *policyModel) fill(p *client.Policy) {
@@ -148,11 +177,13 @@ func (r *policyResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.save(ctx, &plan); err != nil {
-		resp.Diagnostics.AddError("Creating the policy failed", err.Error())
-		return
+	err := r.save(ctx, &plan)
+	if !plan.PolicyID.IsNull() && !plan.PolicyID.IsUnknown() {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if err != nil {
+		resp.Diagnostics.AddError("Creating the policy failed", err.Error())
+	}
 }
 
 func (r *policyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -172,6 +203,14 @@ func (r *policyResource) Read(ctx context.Context, req resource.ReadRequest, res
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	// A version Terraform did not save (someone edited the policy in the console, or it was
+	// imported): the state takes what that version says, so the plan compares it with the
+	// configuration and puts the configured policy back if they differ.
+	if p.PolicyID != state.PolicyID.ValueString() || state.PPL.ValueString() == "" {
+		if text := renderPolicy(p.PPLSource); text != "" {
+			state.PPL = newPPL(text)
+		}
+	}
 	state.fill(p)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -184,7 +223,12 @@ func (r *policyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 	if plan.PPL.ValueString() != state.PPL.ValueString() {
-		if err := r.save(ctx, &plan); err != nil {
+		prev := state.PolicyID
+		err := r.save(ctx, &plan)
+		if !plan.PolicyID.IsUnknown() && !plan.PolicyID.Equal(prev) {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		}
+		if err != nil {
 			resp.Diagnostics.AddError("Saving the policy version failed", err.Error())
 			return
 		}
@@ -221,7 +265,8 @@ func (r *policyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 }
 
-// ImportState imports by name; the next plan asks for the YAML.
+// ImportState imports by name. The state takes the policy as the control plane holds it, so a
+// configuration that says the same thing plans no change and saves no second version.
 func (r *policyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	p, err := r.c.ActivePolicyByName(ctx, req.ID)
 	if err != nil {
@@ -234,6 +279,6 @@ func (r *policyResource) ImportState(ctx context.Context, req resource.ImportSta
 	}
 	var m policyModel
 	m.fill(p)
-	m.PPL = types.StringValue("")
+	m.PPL = newPPL(renderPolicy(p.PPLSource))
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }

@@ -30,13 +30,13 @@ resource "ponte_spend_budget" "org" {
 
 ### Required
 
-- `scope` (String)
+- `scope` (String) org, team, owner, agent or model.
 
 ### Optional
 
 - `monthly_tokens` (Number)
 - `monthly_usd` (Number)
-- `ref` (String) Omitted for scope org.
+- `ref` (String) What the scope names. Omitted for scope org; required for every other scope.
 
 ### Read-Only
 

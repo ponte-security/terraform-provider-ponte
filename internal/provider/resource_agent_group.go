@@ -25,7 +25,7 @@ type agentGroupModel struct {
 	Description         types.String `tfsdk:"description"`
 	TrustLevel          types.String `tfsdk:"trust_level"`
 	Owner               types.String `tfsdk:"owner"`
-	Tags                types.List   `tfsdk:"tags"`
+	Tags                types.Set    `tfsdk:"tags"`
 	MaxConcurrentAgents types.Int64  `tfsdk:"max_concurrent_agents"`
 }
 
@@ -44,7 +44,7 @@ func (r *agentGroupResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"description":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
 			"trust_level":           schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("associate"), Description: "The group's trust level (associate by default)."},
 			"owner":                 schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("unknown"), Description: "The owning person or team."},
-			"tags":                  schema.ListAttribute{ElementType: types.StringType, Optional: true, Description: "Free-form tags."},
+			"tags":                  schema.SetAttribute{ElementType: types.StringType, Optional: true, Description: "Free-form tags. Order does not matter."},
 			"max_concurrent_agents": schema.Int64Attribute{Optional: true, Description: "Cap on simultaneously active member agents."},
 		},
 	}
@@ -73,11 +73,11 @@ func (m *agentGroupModel) fill(ctx context.Context, g *client.Group) {
 	m.TrustLevel = types.StringValue(g.TrustLevel)
 	m.Owner = types.StringValue(g.Owner)
 	if len(g.Tags) > 0 || !m.Tags.IsNull() {
-		tags, _ := types.ListValueFrom(ctx, types.StringType, g.Tags)
-		if len(g.Tags) == 0 {
-			tags, _ = types.ListValueFrom(ctx, types.StringType, []string{})
+		tags := g.Tags
+		if tags == nil {
+			tags = []string{}
 		}
-		m.Tags = tags
+		m.Tags, _ = types.SetValueFrom(ctx, types.StringType, tags)
 	}
 	if g.MaxConcurrentAgents != nil {
 		m.MaxConcurrentAgents = types.Int64Value(int64(*g.MaxConcurrentAgents))

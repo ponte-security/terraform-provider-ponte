@@ -32,7 +32,7 @@ output "siem_signing_secret" {
 
 ### Required
 
-- `event_types` (List of String) Event types, or ["*"] for all. GET /api/v1/webhooks/event-types lists them.
+- `event_types` (Set of String) Event types, or ["*"] for all. GET /api/v1/webhooks/event-types lists them. Order does not matter.
 - `name` (String)
 - `url` (String) https URL; private targets are refused in production.
 
@@ -41,7 +41,7 @@ output "siem_signing_secret" {
 - `description` (String)
 - `enabled` (Boolean)
 - `format` (String) ponte or udm.
-- `format_config` (String) JSON overrides for the udm mapping (event_type_map, product_name, vendor_name, default_event_type).
+- `format_config` (String) JSON overrides for the udm mapping (event_type_map, product_name, vendor_name, default_event_type). Removing it clears the overrides.
 - `headers` (Map of String, Sensitive) Headers sent on every delivery (an Authorization header, for example). Not read back from the api.
 - `min_severity` (String) Lowest level of security finding (governance.alert) delivered: critical, high or medium. Other event types are not filtered. Low findings are never sent.
 

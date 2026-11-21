@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/ponte-security/terraform-provider-ponte/internal/client"
@@ -39,11 +41,36 @@ func (r *spendBudgetResource) Schema(_ context.Context, _ resource.SchemaRequest
 		Description: "A monthly model-spend budget on a scope. org (ref *), team (the agents' team label), owner (user:<ref> or group:<ref>), agent (an agent id), model (provider/model, model, or a prefix ending in *). At least one limit.",
 		Attributes: map[string]schema.Attribute{
 			"id":             schema.StringAttribute{Computed: true, Description: "scope:ref", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"scope":          schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"ref":            schema.StringAttribute{Optional: true, Computed: true, Description: "Omitted for scope org.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()}},
+			"scope":          schema.StringAttribute{Required: true, Description: "org, team, owner, agent or model.", Validators: []validator.String{oneOf("org", "team", "owner", "agent", "model")}, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"ref":            schema.StringAttribute{Optional: true, Computed: true, Description: "What the scope names. Omitted for scope org; required for every other scope.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace(), stringplanmodifier.UseStateForUnknown()}},
 			"monthly_usd":    schema.Float64Attribute{Optional: true},
 			"monthly_tokens": schema.Int64Attribute{Optional: true},
 		},
+	}
+}
+
+// ValidateConfig refuses at plan time what the api would refuse at apply time: a budget with no
+// limit, and a scope that names nothing.
+func (r *spendBudgetResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var cfg spendBudgetModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if cfg.MonthlyUSD.IsNull() && cfg.MonthlyTokens.IsNull() {
+		resp.Diagnostics.AddError("A budget needs a limit", "Set monthly_usd, monthly_tokens, or both.")
+	}
+	if cfg.Scope.IsUnknown() || cfg.Ref.IsUnknown() {
+		return
+	}
+	ref := cfg.Ref.ValueString()
+	switch {
+	case cfg.Scope.ValueString() == "org" && !cfg.Ref.IsNull() && ref != "*":
+		resp.Diagnostics.AddAttributeError(path.Root("ref"), "An org budget has no ref", "Leave ref out for scope org (it is stored as \"*\").")
+	case cfg.Scope.ValueString() != "org" && (cfg.Ref.IsNull() || strings.TrimSpace(ref) == ""):
+		resp.Diagnostics.AddAttributeError(path.Root("ref"), "ref is required", "Scope "+cfg.Scope.ValueString()+" needs a ref: what the budget is on.")
+	case ref != strings.TrimSpace(ref):
+		resp.Diagnostics.AddAttributeError(path.Root("ref"), "ref has surrounding spaces", "Remove the spaces around ref.")
 	}
 }
 
@@ -94,7 +121,11 @@ func (r *spendBudgetResource) write(ctx context.Context, m *spendBudgetModel, wh
 		return false
 	}
 	got, err := r.c.GetBudget(ctx, b.Scope, b.Ref)
-	if err != nil || got == nil {
+	if err != nil {
+		diags.AddError("Reading the budget back failed", err.Error())
+		return false
+	}
+	if got == nil {
 		diags.AddError("Reading the budget back failed", "the budget was written but the api does not list it")
 		return false
 	}

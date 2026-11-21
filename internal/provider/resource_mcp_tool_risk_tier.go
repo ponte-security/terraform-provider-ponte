@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/ponte-security/terraform-provider-ponte/internal/client"
@@ -45,7 +46,7 @@ func (r *mcpToolRiskTierResource) Schema(_ context.Context, _ resource.SchemaReq
 			"id":        schema.StringAttribute{Computed: true, Description: "server_id/tool", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"server_id": schema.StringAttribute{Required: true, Description: "ponte_mcp_server id.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"tool":      schema.StringAttribute{Required: true, Description: "The tool's name as the server lists it.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"risk_tier": schema.StringAttribute{Required: true, Description: "read, write, external_send, destructive or code_exec."},
+			"risk_tier": schema.StringAttribute{Required: true, Validators: []validator.String{oneOf("read", "write", "external_send", "destructive", "code_exec")}, Description: "read, write, external_send, destructive or code_exec."},
 		},
 	}
 }
