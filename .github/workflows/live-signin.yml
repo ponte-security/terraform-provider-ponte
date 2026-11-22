@@ -1,0 +1,47 @@
+# Proves sign-in with the pipeline's own identity against a real Ponte stack: no secret is
+# stored in this repository. Run by hand (Actions → live sign-in → Run workflow).
+#
+# In Ponte (Settings → Automation) an identity must trust this repository:
+#   issuer    https://token.actions.githubusercontent.com
+#   audience  the stack's URL, e.g. https://app.ponte.ai
+#   claims    repository = ponte-security/terraform-provider-ponte, ref = refs/heads/main
+# Its id goes in the repository variable PONTE_IDENTITY_ID, the control plane URL in
+# PONTE_API_URL. Read-only admin is enough: the run only reads.
+name: live sign-in
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write # lets the job request its identity token
+  contents: read
+jobs:
+  sign-in:
+    runs-on: ubuntu-latest
+    env:
+      PONTE_API_URL: ${{ vars.PONTE_API_URL }}
+      PONTE_IDENTITY_ID: ${{ vars.PONTE_IDENTITY_ID }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Settings are present
+        run: |
+          test -n "$PONTE_API_URL" || { echo "::error::Set the repository variable PONTE_API_URL"; exit 1; }
+          test -n "$PONTE_IDENTITY_ID" || { echo "::error::Set the repository variable PONTE_IDENTITY_ID"; exit 1; }
+      - name: What this job's identity token says
+        # The claims a trust rule is written against. They identify the job; none is a secret.
+        run: |
+          origin=$(echo "$PONTE_API_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
+          token=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$origin" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          python3 - "$token" <<'PY'
+          import base64, json, sys
+          payload = sys.argv[1].split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          for k in ("iss", "aud", "repository", "ref", "sub", "workflow", "event_name"):
+              print(f"{k:11} {claims.get(k)}")
+          PY
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_wrapper: false
+      - name: Sign in and read, with the released provider
+        working-directory: examples/live-signin
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve
