@@ -214,3 +214,139 @@ func TestErrorMessage(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// signInServer is the api's sign-in exchange and one route behind it. A session token is good
+// until ended; the route answers 401 for any other bearer token.
+type signInServer struct {
+	mu       sync.Mutex
+	signIns  int
+	requests int
+	good     map[string]bool
+	lifetime int
+}
+
+func (s *signInServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if strings.HasSuffix(r.URL.Path, "/v1/automation/token") {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if bearer != "pak_good" && !(body["identity_id"] == "auto_ci" && body["oidc_token"] == "pipeline-jwt") {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"sign-in refused: the key is not recognised"}`))
+			return
+		}
+		s.signIns++
+		token := fmt.Sprintf("pat_%d", s.signIns)
+		s.good[token] = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": token, "expires_in": s.lifetime})
+		return
+	}
+	s.requests++
+	if !s.good[bearer] {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"the automation session has expired or been ended; sign in again"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{}`))
+}
+
+func newSignInClient(t *testing.T, lifetime int) (*Client, *signInServer) {
+	t.Helper()
+	s := &signInServer{good: map[string]bool{}, lifetime: lifetime}
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+	c := New(ts.URL+"/api/control", "", "test")
+	c.retryWait = time.Millisecond
+	return c, s
+}
+
+func TestSignInWithAPIKey(t *testing.T) {
+	c, s := newSignInClient(t, 600)
+	c.UseAPIKey("pak_good")
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := c.Do(ctx, http.MethodGet, "/v1/x", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.signIns != 1 || s.requests != 3 {
+		t.Fatalf("%d sign-ins for %d requests, want 1 for 3", s.signIns, s.requests)
+	}
+
+	// The session is ended on the server (a key rotated, an identity edited): the next request
+	// signs in again and succeeds, without the caller seeing a 401.
+	s.mu.Lock()
+	s.good = map[string]bool{}
+	s.mu.Unlock()
+	if err := c.Do(ctx, http.MethodGet, "/v1/x", nil, nil); err != nil {
+		t.Fatalf("after the session ended: %v", err)
+	}
+	if s.signIns != 2 {
+		t.Fatalf("%d sign-ins after the session ended, want 2", s.signIns)
+	}
+}
+
+func TestSessionIsRenewedBeforeItRunsOut(t *testing.T) {
+	c, s := newSignInClient(t, 30) // shorter than the margin: every request signs in first
+	c.UseAPIKey("pak_good")
+	for i := 0; i < 3; i++ {
+		if err := c.Do(context.Background(), http.MethodGet, "/v1/x", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.signIns != 3 {
+		t.Fatalf("%d sign-ins, want one per request for a session about to run out", s.signIns)
+	}
+}
+
+func TestSignInRefusedIsSaidPlainly(t *testing.T) {
+	c, s := newSignInClient(t, 600)
+	c.UseAPIKey("pak_wrong")
+	err := c.Do(context.Background(), http.MethodGet, "/v1/x", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "signing in to Ponte") || !strings.Contains(err.Error(), "not recognised") {
+		t.Fatalf("a key Ponte does not know: %v", err)
+	}
+	if s.requests != 0 {
+		t.Fatalf("%d requests were sent without a session", s.requests)
+	}
+}
+
+func TestSignInWithPipelineIdentity(t *testing.T) {
+	c, s := newSignInClient(t, 600)
+	asked := 0
+	c.UsePipelineIdentity("auto_ci", func(context.Context) (string, error) {
+		asked++
+		return " pipeline-jwt\n", nil
+	})
+	if err := c.Do(context.Background(), http.MethodGet, "/v1/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s.signIns != 1 || asked != 1 {
+		t.Fatalf("%d sign-ins, pipeline token asked for %d times", s.signIns, asked)
+	}
+}
+
+// GitHub Actions hands a job a URL and a bearer token to request its identity token with.
+func TestPipelineTokenFromARequestURL(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer request-token" || r.URL.Query().Get("audience") != "https://app.ponte.ai" || r.URL.Query().Get("api-version") != "2.0" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"value":"the-jwt"}`))
+	}))
+	defer ts.Close()
+	src := PipelineTokenSource{RequestURL: ts.URL + "/token?api-version=2.0", RequestToken: "request-token", Audience: "https://app.ponte.ai"}
+	if got, err := src.Fetch(context.Background(), http.DefaultClient); err != nil || got != "the-jwt" {
+		t.Fatalf("Fetch = %q, %v", got, err)
+	}
+	src.RequestToken = "wrong"
+	if _, err := src.Fetch(context.Background(), http.DefaultClient); err == nil {
+		t.Fatal("a refused request returned a token")
+	}
+	if (PipelineTokenSource{RequestURL: "x"}).Configured() || !(PipelineTokenSource{Token: "t"}).Configured() {
+		t.Fatal("Configured is wrong")
+	}
+}

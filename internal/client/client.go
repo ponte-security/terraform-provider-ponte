@@ -13,7 +13,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +28,14 @@ type Client struct {
 	apiEndpoint string
 	// retryWait is the first pause between attempts; it doubles each time. Tests shorten it.
 	retryWait time.Duration
+
+	// signIn, when set, gets a session token for an automation identity (an API key or a
+	// pipeline's own identity exchanged at the api). The client signs in before the first
+	// request, again shortly before the session runs out, and once more if a request is
+	// answered 401. Token is then the current session token.
+	signIn   func(ctx context.Context) (token string, lifetime time.Duration, err error)
+	mu       sync.Mutex
+	tokenEnd time.Time
 }
 
 // New builds a client. endpoint is the control plane base, e.g. https://app.ponte.ai/api/control.
@@ -135,8 +145,22 @@ func (c *Client) do(ctx context.Context, base, method, path string, in, out any)
 		payload = raw
 	}
 	wait := c.retryWait
+	signedInAgain := false
 	for attempt := 1; ; attempt++ {
-		status, raw, err := c.send(ctx, base, method, path, payload, in != nil)
+		token, err := c.bearer(ctx, false)
+		if err != nil {
+			return err
+		}
+		status, raw, err := c.send(ctx, base, method, path, payload, in != nil, token)
+		// A session that ended early (the identity's key was rotated, a session was ended):
+		// sign in again and repeat, once.
+		if err == nil && status == http.StatusUnauthorized && c.signIn != nil && !signedInAgain {
+			signedInAgain = true
+			if _, serr := c.bearer(ctx, true); serr != nil {
+				return serr
+			}
+			continue
+		}
 		if err == nil && status >= 200 && status <= 299 {
 			if out != nil && len(bytes.TrimSpace(raw)) > 0 {
 				if err := json.Unmarshal(raw, out); err != nil {
@@ -167,6 +191,9 @@ func (c *Client) do(ctx context.Context, base, method, path string, in, out any)
 // unauthorizedHint explains a 401. The usual cause is the operator token running out during a
 // long apply: they last minutes.
 func (c *Client) unauthorizedHint() string {
+	if c.signIn != nil {
+		return "The automation identity signed in, and its session was refused. Check that the identity is enabled and its key has not been revoked."
+	}
 	if at, ok := TokenExpiry(c.Token); ok && time.Now().After(at) {
 		return "The operator token expired at " + at.UTC().Format(time.RFC3339) + ". Get a new one and run again; what was already applied is in the state."
 	}
@@ -174,7 +201,7 @@ func (c *Client) unauthorizedHint() string {
 }
 
 // send makes one attempt and returns the status and the body.
-func (c *Client) send(ctx context.Context, base, method, path string, payload []byte, hasBody bool) (int, []byte, error) {
+func (c *Client) send(ctx context.Context, base, method, path string, payload []byte, hasBody bool, token string) (int, []byte, error) {
 	var body io.Reader
 	if hasBody {
 		body = bytes.NewReader(payload)
@@ -183,7 +210,9 @@ func (c *Client) send(ctx context.Context, base, method, path string, payload []
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("Accept", "application/json")
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
@@ -805,4 +834,145 @@ func (c *Client) DeleteRecertPolicy(ctx context.Context, id string) error {
 func IsConflict(err error) bool {
 	var e *Error
 	return errors.As(err, &e) && e.Status == http.StatusConflict
+}
+
+// ── Signing in as an automation identity ──
+
+// sessionMargin is how long before a session's end the client signs in again, so a request
+// never starts with a token about to run out.
+const sessionMargin = 60 * time.Second
+
+// bearer returns the token to send. With a static operator token that is the token. With an
+// automation identity it is the current session token, signing in first when there is none,
+// when it is about to run out, or when fresh is true.
+func (c *Client) bearer(ctx context.Context, fresh bool) (string, error) {
+	if c.signIn == nil {
+		return c.Token, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !fresh && c.Token != "" && time.Until(c.tokenEnd) > sessionMargin {
+		return c.Token, nil
+	}
+	token, lifetime, err := c.signIn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("signing in to Ponte: %w", err)
+	}
+	c.Token, c.tokenEnd = token, time.Now().Add(lifetime)
+	return token, nil
+}
+
+// exchange calls the sign-in exchange with one credential and returns the session token.
+func (c *Client) exchange(ctx context.Context, bearerKey string, body map[string]any) (string, time.Duration, error) {
+	var payload []byte
+	if body != nil {
+		payload, _ = json.Marshal(body)
+	}
+	const path = "/v1/automation/token"
+	status, raw, err := c.send(ctx, c.APIEndpoint(), http.MethodPost, path, payload, body != nil, bearerKey)
+	if err != nil {
+		return "", 0, err
+	}
+	if status != http.StatusOK {
+		return "", 0, &Error{Status: status, Method: http.MethodPost, Path: path, Body: string(raw)}
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.AccessToken == "" {
+		return "", 0, fmt.Errorf("POST %s: the answer carries no session token", path)
+	}
+	if out.ExpiresIn <= 0 {
+		out.ExpiresIn = 300
+	}
+	return out.AccessToken, time.Duration(out.ExpiresIn) * time.Second, nil
+}
+
+// UseAPIKey makes the client sign in with an automation identity's API key.
+func (c *Client) UseAPIKey(key string) {
+	c.Token = ""
+	c.signIn = func(ctx context.Context) (string, time.Duration, error) {
+		return c.exchange(ctx, strings.TrimSpace(key), nil)
+	}
+}
+
+// UsePipelineIdentity makes the client sign in as an automation identity with the pipeline's
+// own OIDC token. pipelineToken is asked for a new token at every sign-in: a pipeline's token
+// lasts minutes too.
+func (c *Client) UsePipelineIdentity(identityID string, pipelineToken func(ctx context.Context) (string, error)) {
+	c.Token = ""
+	c.signIn = func(ctx context.Context) (string, time.Duration, error) {
+		tok, err := pipelineToken(ctx)
+		if err != nil {
+			return "", 0, fmt.Errorf("reading the pipeline's identity token: %w", err)
+		}
+		return c.exchange(ctx, "", map[string]any{"identity_id": identityID, "oidc_token": strings.TrimSpace(tok)})
+	}
+}
+
+// PipelineTokenSource says where a pipeline's OIDC token comes from. The first that is set is
+// used: a literal token, a file holding one, or a request URL that returns one (GitHub
+// Actions: ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN).
+type PipelineTokenSource struct {
+	Token        string
+	File         string
+	RequestURL   string
+	RequestToken string
+	Audience     string
+}
+
+// Configured reports whether any source is set.
+func (p PipelineTokenSource) Configured() bool {
+	return p.Token != "" || p.File != "" || (p.RequestURL != "" && p.RequestToken != "")
+}
+
+// Fetch returns the pipeline's token.
+func (p PipelineTokenSource) Fetch(ctx context.Context, hc *http.Client) (string, error) {
+	switch {
+	case p.Token != "":
+		return p.Token, nil
+	case p.File != "":
+		raw, err := os.ReadFile(p.File)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(string(raw)) == "" {
+			return "", fmt.Errorf("%s is empty", p.File)
+		}
+		return strings.TrimSpace(string(raw)), nil
+	case p.RequestURL != "" && p.RequestToken != "":
+		u, err := url.Parse(p.RequestURL)
+		if err != nil {
+			return "", err
+		}
+		if p.Audience != "" {
+			q := u.Query()
+			q.Set("audience", p.Audience)
+			u.RawQuery = q.Encode()
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+p.RequestToken)
+		req.Header.Set("Accept", "application/json")
+		resp, err := hc.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("the pipeline's token endpoint answered %d", resp.StatusCode)
+		}
+		var out struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil || out.Value == "" {
+			return "", errors.New("the pipeline's token endpoint returned no token")
+		}
+		return out.Value, nil
+	}
+	return "", errors.New("no pipeline token is configured")
 }

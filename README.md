@@ -67,7 +67,37 @@ Webhooks, budgets and MCP servers live on the api (`…/api`) rather than the co
 
 ## Authentication
 
-The provider acts as an **operator**: a signed-in operator's access token (`PONTE_OPERATOR_TOKEN`, the same the `ponte` CLI uses). An agent's token is refused by the control plane for every write here. Tokens are short-lived; for CI, mint one at the start of the job from your identity provider as a user with the operator role. There is no long-lived operator API key by design.
+Three ways to sign in. The first that is set is used, the configuration before the environment.
+
+| For | Set | Notes |
+|---|---|---|
+| A person at a terminal | `PONTE_OPERATOR_TOKEN` | A signed-in operator's access token. It lasts minutes. |
+| A pipeline, with no secret | `PONTE_IDENTITY_ID` | An automation identity (Settings → Automation) with a trust rule for the pipeline. The provider presents the pipeline's own OIDC token. |
+| A pipeline or script, with a key | `PONTE_API_KEY` | An automation identity's API key. Store it as a secret. |
+
+With an automation identity the provider exchanges its credential for a ten-minute session and renews it during a long run. An automation identity holds a role (Operator for applies, Read-only admin for drift checks) and cannot decide approvals, touch credentials or change roles. An agent's token is refused.
+
+### GitHub Actions, no secret
+
+In Ponte, add an automation identity with **Sign in with the pipeline's own identity**: issuer `https://token.actions.githubusercontent.com`, audience your Ponte URL (`https://app.ponte.ai`), claims `repository = your-org/your-repo` and `ref = refs/heads/main`.
+
+```yaml
+permissions:
+  id-token: write   # lets the job request its identity token
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      PONTE_API_URL: https://app.ponte.ai/api/control
+      PONTE_IDENTITY_ID: auto_0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init && terraform apply -auto-approve
+```
+
+Elsewhere, hand the provider the pipeline's token: `PONTE_OIDC_TOKEN` or `PONTE_OIDC_TOKEN_FILE` (GitLab CI: an `id_tokens` entry with `aud` set to your Ponte URL). HCP Terraform's `TFC_WORKLOAD_IDENTITY_TOKEN` is read as is.
 
 ## Developing
 

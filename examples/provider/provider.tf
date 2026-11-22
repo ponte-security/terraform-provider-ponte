@@ -6,5 +6,6 @@ terraform {
 
 provider "ponte" {
   endpoint = "https://app.ponte.ai/api/control" # or PONTE_API_URL
-  # token is read from PONTE_OPERATOR_TOKEN
+  # Sign-in comes from the environment: PONTE_OPERATOR_TOKEN (a person),
+  # PONTE_IDENTITY_ID (a pipeline's own identity) or PONTE_API_KEY.
 }

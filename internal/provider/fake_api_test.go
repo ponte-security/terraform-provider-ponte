@@ -124,6 +124,15 @@ type fakeAPI struct {
 	createdModes       []string
 	modePatches        int
 
+	// Automation sign-in: the API key and the pipeline identity the fake accepts, the session
+	// tokens it has handed out, and how many sign-ins it has seen.
+	apiKey        string
+	identityID    string
+	pipelineToken string
+	sessions      map[string]bool
+	signIns       int
+	sessionSecs   int
+
 	scimTargets    map[string]*fakeSCIMTarget
 	recertPolicies map[string]*fakeRecertPolicy
 
@@ -177,12 +186,17 @@ func jsonOut(w http.ResponseWriter, status int, v any) {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+f.token {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// The sign-in exchange for automation identities carries its own credential.
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/v1/automation/token") {
+		f.serveSignIn(w, r)
+		return
+	}
+	if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); bearer != f.token && !f.sessions[bearer] {
 		jsonOut(w, 401, map[string]any{"error": "unauthorized"})
 		return
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
 	p := r.URL.Path
 	p = strings.TrimPrefix(p, "/api/control")
@@ -490,4 +504,32 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func startFake(token string) (*fakeAPI, *httptest.Server) {
 	f := newFakeAPI(token)
 	return f, httptest.NewServer(f)
+}
+
+// serveSignIn is POST /api/v1/automation/token: an API key as the bearer token, or identity_id
+// and oidc_token in the body, exchanged for a session token. Caller holds f.mu.
+func (f *fakeAPI) serveSignIn(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IdentityID string `json:"identity_id"`
+		OIDCToken  string `json:"oidc_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	byKey := f.apiKey != "" && key == f.apiKey
+	byPipeline := f.identityID != "" && body.IdentityID == f.identityID && body.OIDCToken == f.pipelineToken
+	if !byKey && !byPipeline {
+		jsonOut(w, 401, map[string]any{"error": "sign-in refused: the key is not recognised"})
+		return
+	}
+	f.signIns++
+	if f.sessions == nil {
+		f.sessions = map[string]bool{}
+	}
+	token := fmt.Sprintf("pat_session_%d", f.signIns)
+	f.sessions[token] = true
+	secs := f.sessionSecs
+	if secs == 0 {
+		secs = 600
+	}
+	jsonOut(w, 200, map[string]any{"access_token": token, "token_type": "Bearer", "expires_in": secs})
 }

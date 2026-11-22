@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+Unattended runs: the provider signs in as an automation identity (Settings → Automation in Ponte).
+
+- `identity_id` / `PONTE_IDENTITY_ID`: sign in with the pipeline's own OIDC identity, with no secret stored. The pipeline's token comes from `oidc_token`, `oidc_token_file`, `TFC_WORKLOAD_IDENTITY_TOKEN`, or is requested from GitHub Actions.
+- `api_key` / `PONTE_API_KEY`: sign in with an automation identity's API key.
+- The session is renewed during a long run, so an apply no longer fails when a token runs out.
+- An operator token (`PONTE_OPERATOR_TOKEN`) still works for a person.
+
 ## 0.2.0
 
 New resources:
