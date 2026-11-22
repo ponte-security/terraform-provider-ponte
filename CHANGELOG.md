@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+New resources:
+
+- `ponte_scim_target`: a system Ponte pushes its agents to over SCIM.
+- `ponte_recert_policy`: how a recertification campaign is reviewed.
+
 ## 0.1.1
 
 Fixes:

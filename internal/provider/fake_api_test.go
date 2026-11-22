@@ -124,6 +124,9 @@ type fakeAPI struct {
 	createdModes       []string
 	modePatches        int
 
+	scimTargets    map[string]*fakeSCIMTarget
+	recertPolicies map[string]*fakeRecertPolicy
+
 	mu       sync.Mutex
 	webhooks map[string]*fakeWebhook
 	budgets  map[string]*fakeBudget
@@ -477,7 +480,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, 404, map[string]any{"error": "agent not found"})
 	default:
-		if f.serveMCP(w, r, parts) {
+		if f.serveMCP(w, r, parts) || f.serveGovernance(w, r, p, parts) {
 			return
 		}
 		jsonOut(w, 404, map[string]any{"error": "no route " + r.Method + " " + r.URL.Path})

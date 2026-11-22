@@ -1,6 +1,6 @@
 # terraform-provider-ponte
 
-Ponte authorization resources as code: policies, agent groups, memberships, policy bindings, webhooks, spend budgets and MCP servers, through the operator API.
+Ponte authorization resources as code: policies, agent groups, memberships, policy bindings, webhooks, spend budgets, MCP servers, SCIM targets and recertification review policies, through the operator API.
 
 ```hcl
 terraform {
@@ -51,6 +51,8 @@ resource "ponte_policy_binding" "claims_bot_budget" {
 
 | `ponte_mcp_server` | `res_…` | a registered MCP server: name, endpoint_url, data_classification, environment, owner, require_tool_review. Policies can refuse unregistered servers. A changed `endpoint_url` replaces the resource (pinned tools belong to the endpoint); everything else is edited in place and keeps the pins. Destroy deregisters the server and deletes its pins, proxy configuration and sync credential. Import by id. |
 | `ponte_mcp_tool_risk_tier` | `server_id/tool` | the declared risk tier of one tool: `read`, `write`, `external_send`, `destructive` or `code_exec`. Policies read the declared tier. The tool must be pinned first (sync the server), otherwise apply fails with "tool not pinned". Destroy leaves the declaration in Ponte (there is no clear) and warns. |
+| `ponte_scim_target` | `scimtg_…` | a system Ponte pushes its agents to over SCIM: name, base_url, bearer_token (sensitive, never read back), enabled. Only `enabled` changes in place; anything else replaces the target. Import by id; the first apply after an import records the credential without replacing the target. |
+| `ponte_recert_policy` | `rp_…` | how a recertification campaign is reviewed: reviewer, second review, deadline and reminder, what happens when overdue and on a denial, auto-certify conditions. Edited in place. A policy a schedule or rule uses cannot be destroyed. Import by id. |
 
 ## Data sources
 
@@ -100,4 +102,4 @@ Tested against a live stack (app.ponte.ai, 2026-11-18): create, update in place,
 
 ## Not yet covered
 
-MCP proxy configuration and sync credentials, tool approvals (an approval is a human review of one definition, so it stays in the console), SCIM targets, recert policies, target audit log integrations. Each is a few hundred lines in `internal/provider`; the client in `internal/client` is the only place that knows the API.
+MCP proxy configuration and sync credentials, tool approvals (an approval is a human review of one definition, so it stays in the console), recertification schedules and rules, target audit log integrations. The client in `internal/client` is the only place that knows the API.

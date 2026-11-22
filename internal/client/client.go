@@ -677,3 +677,132 @@ func (c *Client) ListAgents(ctx context.Context, search, status string) ([]Agent
 	}
 	return all, nil
 }
+
+// ── SCIM targets: systems Ponte pushes its agents to over SCIM ──
+
+// SCIMTarget is an outbound SCIM target. The bearer credential is write-only: Ponte stores it
+// in its secret store and never returns it.
+type SCIMTarget struct {
+	TargetID  string `json:"target_id"`
+	Name      string `json:"name"`
+	BaseURL   string `json:"base_url"`
+	Enabled   bool   `json:"enabled"`
+	LastError string `json:"last_error"`
+}
+
+// CreateSCIMTarget records a target and stores its credential. A new target is enabled.
+func (c *Client) CreateSCIMTarget(ctx context.Context, name, baseURL, bearerToken string) (*SCIMTarget, error) {
+	var out struct {
+		Target SCIMTarget `json:"target"`
+	}
+	in := map[string]any{"name": name, "base_url": baseURL, "bearer_token": bearerToken}
+	if err := c.Do(ctx, http.MethodPost, "/v1/scim/targets", in, &out); err != nil {
+		return nil, err
+	}
+	return &out.Target, nil
+}
+
+// GetSCIMTarget reads one target (through the list; there is no single-item read).
+func (c *Client) GetSCIMTarget(ctx context.Context, id string) (*SCIMTarget, error) {
+	var out struct {
+		Targets []SCIMTarget `json:"targets"`
+	}
+	if err := c.Do(ctx, http.MethodGet, "/v1/scim/targets", nil, &out); err != nil {
+		return nil, err
+	}
+	for i := range out.Targets {
+		if out.Targets[i].TargetID == id {
+			return &out.Targets[i], nil
+		}
+	}
+	return nil, &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: "/v1/scim/targets/" + id, Body: "not found"}
+}
+
+// SetSCIMTargetEnabled turns pushes to a target on or off. It is the only in-place change.
+func (c *Client) SetSCIMTargetEnabled(ctx context.Context, id string, enabled bool) error {
+	return c.Do(ctx, http.MethodPatch, "/v1/scim/targets/"+seg(id), map[string]any{"enabled": enabled}, nil)
+}
+
+// DeleteSCIMTarget removes a target and its stored credential.
+func (c *Client) DeleteSCIMTarget(ctx context.Context, id string) error {
+	return c.Do(ctx, http.MethodDelete, "/v1/scim/targets/"+seg(id), nil, nil)
+}
+
+// ── Recertification review policies: how a campaign is reviewed ──
+
+// RecertCondition is one auto-certify condition.
+type RecertCondition struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value string `json:"value"`
+}
+
+// RecertPolicySpec is how a campaign is reviewed. Members are sent in full on every save: the
+// control plane replaces the whole spec.
+type RecertPolicySpec struct {
+	Reviewer      string            `json:"reviewer"`
+	ReviewerRef   string            `json:"reviewer_ref"`
+	FallbackGroup string            `json:"fallback_group"`
+	SecondReview  string            `json:"second_review"`
+	SecondGroup   string            `json:"second_group"`
+	DueDays       int64             `json:"due_days"`
+	RemindDays    int64             `json:"remind_days"`
+	OnOverdue     string            `json:"on_overdue"`
+	EscalateGroup string            `json:"escalate_group"`
+	EscalateDays  int64             `json:"escalate_days"`
+	OnDeny        string            `json:"on_deny"`
+	AutoCertify   []RecertCondition `json:"auto_certify"`
+}
+
+// RecertPolicy is a stored review policy.
+type RecertPolicy struct {
+	PolicyID string           `json:"policy_id"`
+	Name     string           `json:"name"`
+	Spec     RecertPolicySpec `json:"spec"`
+	UsedBy   int              `json:"used_by"`
+}
+
+// SaveRecertPolicy creates a review policy (id "") or replaces one.
+func (c *Client) SaveRecertPolicy(ctx context.Context, id, name string, spec RecertPolicySpec) (*RecertPolicy, error) {
+	var out struct {
+		Policy RecertPolicy `json:"policy"`
+	}
+	if spec.AutoCertify == nil {
+		spec.AutoCertify = []RecertCondition{}
+	}
+	method, path := http.MethodPost, "/v1/recert/policies"
+	if id != "" {
+		method, path = http.MethodPut, path+"/"+seg(id)
+	}
+	if err := c.Do(ctx, method, path, map[string]any{"name": name, "spec": spec}, &out); err != nil {
+		return nil, err
+	}
+	return &out.Policy, nil
+}
+
+// GetRecertPolicy reads one review policy (through the list; there is no single-item read).
+func (c *Client) GetRecertPolicy(ctx context.Context, id string) (*RecertPolicy, error) {
+	var out struct {
+		Policies []RecertPolicy `json:"policies"`
+	}
+	if err := c.Do(ctx, http.MethodGet, "/v1/recert/policies", nil, &out); err != nil {
+		return nil, err
+	}
+	for i := range out.Policies {
+		if out.Policies[i].PolicyID == id {
+			return &out.Policies[i], nil
+		}
+	}
+	return nil, &Error{Status: http.StatusNotFound, Method: http.MethodGet, Path: "/v1/recert/policies/" + id, Body: "not found"}
+}
+
+// DeleteRecertPolicy deletes a review policy. One that a schedule or rule uses is refused (409).
+func (c *Client) DeleteRecertPolicy(ctx context.Context, id string) error {
+	return c.Do(ctx, http.MethodDelete, "/v1/recert/policies/"+seg(id), nil, nil)
+}
+
+// IsConflict reports whether err is a 409.
+func IsConflict(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusConflict
+}

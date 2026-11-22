@@ -40,7 +40,7 @@ func (p *ponteProvider) Metadata(_ context.Context, _ provider.MetadataRequest, 
 
 func (p *ponteProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manage Ponte authorization resources: policies, agent groups, memberships, policy bindings, webhooks, spend budgets and MCP servers.",
+		Description: "Manage Ponte authorization resources: policies, agent groups, memberships, policy bindings, webhooks, spend budgets, MCP servers, SCIM targets and recertification review policies.",
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
 				Optional:    true,
@@ -121,6 +121,8 @@ func (p *ponteProvider) Resources(_ context.Context) []func() resource.Resource 
 		newSpendBudgetResource,
 		newMCPServerResource,
 		newMCPToolRiskTierResource,
+		newSCIMTargetResource,
+		newRecertPolicyResource,
 	}
 }
 
