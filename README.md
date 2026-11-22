@@ -124,7 +124,7 @@ Published on the Terraform Registry as [`ponte-security/ponte`](https://registry
 3. Push to `main`; the `test` workflow must pass.
 4. Push a tag `vX.Y.Z`. The `release` workflow runs the tests again, then builds, signs and publishes. It needs the repository secrets `GPG_PRIVATE_KEY` and `PASSPHRASE` for the key registered with the Registry namespace.
 
-Tested against a live stack (app.ponte.ai, 2026-11-22): create, update in place, re-plan with no changes, import and destroy for every resource. `ponte_mcp_tool_risk_tier` was run by declaring a tier a tool already had, because a declared tier cannot be cleared.
+Tested against a live stack (app.ponte.ai, 2026-11-22): create, update in place, re-plan with no changes, import and destroy for every resource; and an apply signed in with an automation identity's API key. `ponte_mcp_tool_risk_tier` was run by declaring a tier a tool already had, because a declared tier cannot be cleared.
 
 ## Licence
 
