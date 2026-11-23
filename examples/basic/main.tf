@@ -1,6 +1,6 @@
 # A group, two members, a policy in observe mode, and a direct binding.
 #
-#   export PONTE_API_URL=https://app.ponte.ai/api/control
+#   export PONTE_API_URL=https://api.ponte.ai/control
 #   export PONTE_OPERATOR_TOKEN=…
 #   terraform init && terraform apply
 

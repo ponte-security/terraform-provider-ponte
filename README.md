@@ -10,7 +10,7 @@ terraform {
 }
 
 provider "ponte" {
-  endpoint = "https://app.ponte.ai/api/control"   # or PONTE_API_URL
+  endpoint = "https://api.ponte.ai/control"   # or PONTE_API_URL
   # token  = …                                      # or PONTE_OPERATOR_TOKEN
 }
 
@@ -79,7 +79,7 @@ With an automation identity the provider exchanges its credential for a ten-minu
 
 ### GitHub Actions, no secret
 
-In Ponte, add an automation identity with **Sign in with the pipeline's own identity**: issuer `https://token.actions.githubusercontent.com`, audience your Ponte URL (`https://app.ponte.ai`), claims `repository = your-org/your-repo` and `ref = refs/heads/main`.
+In Ponte, add an automation identity with **Sign in with the pipeline's own identity**: issuer `https://token.actions.githubusercontent.com`, audience your Ponte API URL (`https://api.ponte.ai`), claims `repository = your-org/your-repo` and `ref = refs/heads/main`.
 
 ```yaml
 permissions:
@@ -89,7 +89,7 @@ jobs:
   apply:
     runs-on: ubuntu-latest
     env:
-      PONTE_API_URL: https://app.ponte.ai/api/control
+      PONTE_API_URL: https://api.ponte.ai/control
       PONTE_IDENTITY_ID: auto_0123456789abcdef
     steps:
       - uses: actions/checkout@v4
@@ -97,7 +97,7 @@ jobs:
       - run: terraform init && terraform apply -auto-approve
 ```
 
-Elsewhere, hand the provider the pipeline's token: `PONTE_OIDC_TOKEN` or `PONTE_OIDC_TOKEN_FILE` (GitLab CI: an `id_tokens` entry with `aud` set to your Ponte URL). HCP Terraform's `TFC_WORKLOAD_IDENTITY_TOKEN` is read as is.
+Elsewhere, hand the provider the pipeline's token: `PONTE_OIDC_TOKEN` or `PONTE_OIDC_TOKEN_FILE` (GitLab CI: an `id_tokens` entry with `aud` set to your Ponte API URL). HCP Terraform's `TFC_WORKLOAD_IDENTITY_TOKEN` is read as is.
 
 ## Developing
 

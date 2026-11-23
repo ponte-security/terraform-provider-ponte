@@ -3,7 +3,7 @@
 #
 # In Ponte (Settings → Automation) an identity must trust this repository:
 #   issuer    https://token.actions.githubusercontent.com
-#   audience  the stack's URL, e.g. https://app.ponte.ai
+#   audience  the stack's API URL, e.g. https://api.ponte.ai
 #   claims    repository = ponte-security/terraform-provider-ponte, ref = refs/heads/main
 # Its id goes in the repository variable PONTE_IDENTITY_ID, the control plane URL in
 # PONTE_API_URL. Read-only admin is enough: the run only reads.

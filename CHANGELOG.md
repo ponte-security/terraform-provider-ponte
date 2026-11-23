@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Documentation and examples use the API's own hostname: `https://api.ponte.ai/control`. The console's (`https://app.ponte.ai/api/control`) keeps working.
+- With `identity_id`, the audience asked for by default is the origin of the endpoint, so with the new endpoint it is `https://api.ponte.ai`. An identity whose trust rule names `https://app.ponte.ai` needs `oidc_audience` set to that, or its rule changed.
+
 ## 0.3.0
 
 Unattended runs: the provider signs in as an automation identity (Settings → Automation in Ponte).

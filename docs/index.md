@@ -19,7 +19,7 @@ terraform {
 }
 
 provider "ponte" {
-  endpoint = "https://app.ponte.ai/api/control" # or PONTE_API_URL
+  endpoint = "https://api.ponte.ai/control" # or PONTE_API_URL
   # Sign-in comes from the environment: PONTE_OPERATOR_TOKEN (a person),
   # PONTE_IDENTITY_ID (a pipeline's own identity) or PONTE_API_KEY.
 }
@@ -30,9 +30,9 @@ provider "ponte" {
 
 ### Optional
 
-- `api_endpoint` (String) The api base URL for webhooks, budgets and MCP servers, e.g. https://app.ponte.ai/api. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).
+- `api_endpoint` (String) The api base URL for webhooks, budgets and MCP servers, e.g. https://api.ponte.ai. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).
 - `api_key` (String, Sensitive) An automation identity's API key (Settings → Automation), for unattended runs. Defaults to PONTE_API_KEY. The provider exchanges it for a short session and renews the session during a long run.
-- `endpoint` (String) The control plane base URL, e.g. https://app.ponte.ai/api/control. Defaults to PONTE_API_URL.
+- `endpoint` (String) The control plane base URL, e.g. https://api.ponte.ai/control. Defaults to PONTE_API_URL.
 - `identity_id` (String) The automation identity to sign in as with the pipeline's own OIDC identity (auto_…), so no secret is stored. Defaults to PONTE_IDENTITY_ID. The pipeline's token is read from oidc_token, oidc_token_file, TFC_WORKLOAD_IDENTITY_TOKEN, or requested from GitHub Actions (permissions: id-token: write).
 - `oidc_audience` (String) The audience to ask GitHub Actions for, matching the identity's trust rule. Defaults to PONTE_OIDC_AUDIENCE, then to the scheme and host of the endpoint.
 - `oidc_token` (String, Sensitive) The pipeline's OIDC token. Defaults to PONTE_OIDC_TOKEN. Used with identity_id.

@@ -50,11 +50,11 @@ func (p *ponteProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
 				Optional:    true,
-				Description: "The control plane base URL, e.g. https://app.ponte.ai/api/control. Defaults to PONTE_API_URL.",
+				Description: "The control plane base URL, e.g. https://api.ponte.ai/control. Defaults to PONTE_API_URL.",
 			},
 			"api_endpoint": schema.StringAttribute{
 				Optional:    true,
-				Description: "The api base URL for webhooks, budgets and MCP servers, e.g. https://app.ponte.ai/api. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).",
+				Description: "The api base URL for webhooks, budgets and MCP servers, e.g. https://api.ponte.ai. Defaults to the endpoint without its /control suffix (or PONTE_API_BASE_URL).",
 			},
 			"token": schema.StringAttribute{
 				Optional:    true,
@@ -123,7 +123,7 @@ func (p *ponteProvider) Configure(ctx context.Context, req provider.ConfigureReq
 		}
 	}
 	if endpoint == "" {
-		resp.Diagnostics.AddError("Ponte endpoint is not set", "Set provider \"endpoint\" or PONTE_API_URL, e.g. https://app.ponte.ai/api/control.")
+		resp.Diagnostics.AddError("Ponte endpoint is not set", "Set provider \"endpoint\" or PONTE_API_URL, e.g. https://api.ponte.ai/control.")
 	}
 	if token == "" && apiKey == "" && identityID == "" {
 		resp.Diagnostics.AddError("No way to sign in to Ponte is set",
